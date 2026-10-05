@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Loaded config is stored as a flat associative array: CONFIG["name"], CONFIG["database.driver"], etc.
+# Loaded config is stored as a flat associative array:
+#   CONFIG["db_name"], CONFIG["ports.app"], CONFIG["env.APP_PORT"],
+#   CONFIG["hooks.create[0]"], CONFIG["copy[0]"], CONFIG["straps[0]"], ...
 declare -gA CONFIG
 
-# Parse YAML into flat KEY=VALUE pairs using Python, then load into CONFIG.
-load_config() {
-    local config_path="$1"
-    if [[ ! -f "$config_path" ]]; then
-        # Return silently; caller should apply defaults.
-        return 0
-    fi
+# Parse a YAML file into the named associative array as flat KEY=VALUE pairs.
+_yaml_to_assoc() {
+    local yaml_path="$1"
+    local -n out_ref="$2"
 
     if ! command_exists python3; then
-        fatal "python3 is required to parse .worktree-bootstrap.yml"
+        fatal "python3 is required to parse .wtbs.yml"
     fi
 
     local raw
-    raw="$(python3 - "$config_path" <<'PY'
+    raw="$(python3 - "$yaml_path" <<'PY'
 import sys, yaml
 def flatten(obj, prefix=''):
     out = []
@@ -41,15 +40,22 @@ if data is None:
 for k, v in flatten(data):
     print(f'{k}={v}')
 PY
-    )" || fatal "failed to parse config: $config_path"
+    )" || fatal "failed to parse config: $yaml_path"
 
-    # Clear previous config.
-    CONFIG=()
+    out_ref=()
     local line key value
     while IFS='=' read -r key value; do
         [[ -z "$key" ]] && continue
-        CONFIG["$key"]="$value"
+        out_ref["$key"]="$value"
     done <<< "$raw"
+}
+
+# Load the project config file into CONFIG. Missing file = empty config.
+load_config() {
+    local config_path="$1"
+    CONFIG=()
+    [[ -f "$config_path" ]] || return 0
+    _yaml_to_assoc "$config_path" CONFIG
 }
 
 # Read a dotted config path. Returns empty string if missing.
@@ -58,51 +64,47 @@ get_config() {
     echo "${CONFIG[$path]:-}"
 }
 
-# Apply default values for any keys not present in the loaded config.
-apply_defaults() {
-    # Defaults mirror a typical Laravel/MySQL flow.
-    [[ -z "${CONFIG["name"]:-}" ]] && CONFIG["name"]="worktree-bootstrap project"
-    [[ -z "${CONFIG["copy_from_main[0]"]:-}" ]] && CONFIG["copy_from_main[0]"]=".env"
-    [[ -z "${CONFIG["database.driver"]:-}" ]] && CONFIG["database.driver"]="mysql"
-    [[ -z "${CONFIG["database.source_env_key"]:-}" ]] && CONFIG["database.source_env_key"]="DB_DATABASE"
-    [[ -z "${CONFIG["database.host_env_key"]:-}" ]] && CONFIG["database.host_env_key"]="DB_HOST"
-    [[ -z "${CONFIG["database.port_env_key"]:-}" ]] && CONFIG["database.port_env_key"]="DB_PORT"
-    [[ -z "${CONFIG["database.user_env_key"]:-}" ]] && CONFIG["database.user_env_key"]="DB_USERNAME"
-    [[ -z "${CONFIG["database.pass_env_key"]:-}" ]] && CONFIG["database.pass_env_key"]="DB_PASSWORD"
-    [[ -z "${CONFIG["database.name_prefix"]:-}" ]] && CONFIG["database.name_prefix"]="wt_"
-    [[ -z "${CONFIG["ports.base.app"]:-}" ]] && CONFIG["ports.base.app"]="8080"
-    [[ -z "${CONFIG["ports.base.db"]:-}" ]] && CONFIG["ports.base.db"]="33060"
-    [[ -z "${CONFIG["ports.base.vite"]:-}" ]] && CONFIG["ports.base.vite"]="5173"
-    [[ -z "${CONFIG["ports.base.serve"]:-}" ]] && CONFIG["ports.base.serve"]="8000"
-    [[ -z "${CONFIG["ports.base.redis"]:-}" ]] && CONFIG["ports.base.redis"]="6379"
-    [[ -z "${CONFIG["ports.base.mailhog"]:-}" ]] && CONFIG["ports.base.mailhog"]="1025"
-    [[ -z "${CONFIG["commands.install[0]"]:-}" ]] && CONFIG["commands.install[0]"]="composer install"
-    [[ -z "${CONFIG["commands.install[0]"]:-}" ]] && CONFIG["commands.install[1]"]="npm ci"
-    [[ -z "${CONFIG["commands.build[0]"]:-}" ]] && CONFIG["commands.build[0]"]="npm run build"
-
-    # Laravel/Sail env defaults apply only when the project defines no
-    # env_updates at all, so non-Laravel stacks don't get dead keys written
-    # into their .env (they declare what they need via env_updates instead).
-    local has_env_updates=0
-    local cfg_key
-    for cfg_key in "${!CONFIG[@]}"; do
-        [[ "$cfg_key" == env_updates.* ]] && has_env_updates=1 && break
+# Collect list entries (prefix[0], prefix[1], ...) into the named array.
+config_list() {
+    local prefix="$1"
+    local -n list_ref="$2"
+    list_ref=()
+    local i=0 val
+    while true; do
+        val="${CONFIG["${prefix}[${i}]"]:-}"
+        [[ -z "$val" ]] && break
+        list_ref+=("$val")
+        i=$((i + 1))
     done
-    if [[ $has_env_updates -eq 0 ]]; then
-        CONFIG["env_updates.APP_PORT"]="{ports.app}"
-        CONFIG["env_updates.FORWARD_DB_PORT"]="{ports.db}"
-        CONFIG["env_updates.VITE_PORT"]="{ports.vite}"
-    fi
+}
 
-    # The [[ -z ]] && pattern above leaves a non-zero status when the config
-    # already defines the last key checked; callers run under `set -e`.
+# v0.4 is a clean break: v0.3 keys are rejected with a migration pointer
+# instead of being silently reinterpreted.
+reject_legacy_keys() {
+    local -a legacy=()
+    local k
+    for k in "${!CONFIG[@]}"; do
+        case "$k" in
+            database.*|commands.*|env_updates.*|copy_from_main*|ports.base.*)
+                legacy+=("$k") ;;
+        esac
+    done
+    if [[ ${#legacy[@]} -gt 0 ]]; then
+        printf 'FATAL: v0.3 config keys are not supported anymore: %s\n' "${legacy[*]}" >&2
+        fatal "v0.4 config surface: straps, copy, db_name, ports, env, hooks, aliases — see examples/"
+    fi
+}
+
+# The only built-in default left: how the {db_name} token is computed.
+# Everything else is policy, expressed via config or straps.
+apply_defaults() {
+    [[ -z "${CONFIG["db_name"]:-}" ]] && CONFIG["db_name"]="wt_{branch_slug}"
     return 0
 }
 
 # Render a template string using a context associative array.
-# Recognized tokens correspond to context keys, e.g. {branch}, {branch_slug},
+# Recognized tokens correspond to context keys: {branch}, {branch_slug},
 # {site}, {db_name}, {worktree_root}, {main_repo}, and {ports.<name>}.
-# {site} is the lowercased worktree directory basename (e.g. the Valet site name).
 render_template() {
     local template="$1"
     local -n ctx_ref="$2"
@@ -132,4 +134,12 @@ render_env_refs() {
     done
 
     echo "$result"
+}
+
+# The db_name config value is a template that may reference {branch} and
+# {branch_slug}; everything else would be circular (ports, db_name itself).
+compute_db_name() {
+    local branch="$1" branch_slug="$2"
+    local -A mini=([branch]="$branch" [branch_slug]="$branch_slug")
+    render_template "$(get_config db_name)" mini
 }

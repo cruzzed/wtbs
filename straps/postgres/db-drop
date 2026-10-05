@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Drop a Postgres database. Missing databases are not an error.
+set -euo pipefail
+
+target="${1:?usage: db-drop <target-db>}"
+maintenance_db="${PG_MAINTENANCE_DB:-postgres}"
+
+host="${DB_HOST:-127.0.0.1}"
+port="${DB_PORT:-5432}"
+user="${DB_USERNAME:-${USER:-postgres}}"
+export PGPASSWORD="${DB_PASSWORD:-}"
+
+quote_id() { printf '"%s"' "${1//\"/\"\"}"; }
+
+psql --host="$host" --port="$port" --username="$user" -d "$maintenance_db" \
+    -c "DROP DATABASE IF EXISTS $(quote_id "$target");"
+echo "db-drop: dropped $target"

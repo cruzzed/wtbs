@@ -1,0 +1,20 @@
+# Laravel Valet strap: each worktree is served at https://{site}.test —
+# park the parent directory of your worktrees once (valet park <dir>) and no
+# per-branch serve command or port is needed.
+#
+# If your valet TLD is not "test", run: wtbs strap customize valet
+# and adjust APP_URL. valet secure/unsecure restart nginx internally, so the
+# sudo password may be prompted for during create/destroy.
+#
+# valet-check-name carries the server_names_hash_bucket_size guard: an
+# over-long site name makes nginx fail to start for EVERY valet site.
+
+env:
+  APP_URL: "https://{site}.test"
+
+hooks:
+  create:
+    - "valet-check-name {site}"
+    - 'command -v valet >/dev/null && valet secure "{site}" || true'
+  destroy:
+    - 'command -v valet >/dev/null && valet unsecure "{site}" || true'

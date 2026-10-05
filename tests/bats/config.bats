@@ -2,23 +2,25 @@
 
 setup() {
     source "$BATS_TEST_DIRNAME/../../lib/utils.sh"
+    source "$BATS_TEST_DIRNAME/../../lib/env.sh"
     source "$BATS_TEST_DIRNAME/../../lib/config.sh"
     export TMP_CONFIG="$(mktemp).yml"
     cat > "$TMP_CONFIG" <<'EOF'
-name: Test Project
-copy_from_main:
+straps:
+  - sqlite
+copy:
   - .env
-  - .claude/settings.local.json
-database:
-  driver: sqlite
-  source_env_key: DB_DATABASE
+db_name: "myapp_{branch_slug}"
 ports:
-  base:
-    app: 8080
-    db: 33060
-commands:
-  install:
-    - npm ci
+  app: 8080
+  db: 33060
+env:
+  APP_PORT: "{ports.app}"
+hooks:
+  create:
+    - "echo hi {branch_slug}"
+aliases:
+  test: "echo test"
 EOF
 }
 
@@ -28,8 +30,20 @@ teardown() {
 
 @test "load_config reads yaml via python3" {
     load_config "$TMP_CONFIG"
-    [[ "$(get_config name)" == "Test Project" ]]
-    [[ "$(get_config database.driver)" == "sqlite" ]]
+    [[ "$(get_config db_name)" == 'myapp_{branch_slug}' ]]
+    [[ "$(get_config ports.app)" == "8080" ]]
+    [[ "$(get_config aliases.test)" == "echo test" ]]
+}
+
+@test "config_list collects list entries in order" {
+    load_config "$TMP_CONFIG"
+    local -a straps=() copy=() create=()
+    config_list straps straps
+    config_list copy copy
+    config_list hooks.create create
+    [[ "${straps[0]}" == "sqlite" ]]
+    [[ "${copy[0]}" == ".env" ]]
+    [[ "${create[0]}" == 'echo hi {branch_slug}' ]]
 }
 
 @test "get_config returns empty for missing path" {
@@ -37,21 +51,46 @@ teardown() {
     [[ -z "$(get_config does.not.exist)" ]]
 }
 
-@test "apply_defaults fills missing keys" {
-    load_config "$TMP_CONFIG"
-    apply_defaults
-    [[ "$(get_config name)" == "Test Project" ]]
-    [[ "$(get_config database.driver)" == "sqlite" ]]
-    [[ "$(get_config ports.base.app)" == "8080" ]]
-}
-
-@test "apply_defaults applies when config is empty" {
+@test "apply_defaults only defaults db_name" {
     load_config "/nonexistent/config.yml"
     apply_defaults
-    [[ "$(get_config name)" == "worktree-bootstrap project" ]]
-    [[ "$(get_config database.driver)" == "mysql" ]]
-    [[ "$(get_config copy_from_main[0])" == ".env" ]]
-    [[ "$(get_config commands.install[0])" == "composer install" ]]
+    [[ "$(get_config db_name)" == 'wt_{branch_slug}' ]]
+    # No framework defaults may leak in.
+    [[ -z "$(get_config ports.app)" ]]
+    [[ -z "$(get_config hooks.create[0])" ]]
+    [[ -z "$(get_config copy[0])" ]]
+}
+
+@test "reject_legacy_keys fatals on v0.3 config keys" {
+    cat > "$TMP_CONFIG" <<'EOF'
+database:
+  driver: mysql
+commands:
+  install:
+    - npm ci
+EOF
+    load_config "$TMP_CONFIG"
+    run reject_legacy_keys
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"v0.3 config keys"* ]]
+    [[ "$output" == *"examples/"* ]]
+}
+
+@test "reject_legacy_keys accepts the v0.4 surface" {
+    load_config "$TMP_CONFIG"
+    reject_legacy_keys
+}
+
+@test "compute_db_name renders the configured template" {
+    load_config "$TMP_CONFIG"
+    apply_defaults
+    [[ "$(compute_db_name feature/foo-bar feature_foo_bar)" == "myapp_feature_foo_bar" ]]
+}
+
+@test "compute_db_name uses the default template" {
+    load_config "/nonexistent/config.yml"
+    apply_defaults
+    [[ "$(compute_db_name feature/foo feature_foo)" == "wt_feature_foo" ]]
 }
 
 @test "render_template substitutes context keys" {
@@ -73,7 +112,6 @@ teardown() {
 }
 
 @test "render_env_refs substitutes existing env values" {
-    source "$BATS_TEST_DIRNAME/../../lib/env.sh"
     local env_file="$(mktemp)"
     printf 'DATABASE_URL=postgres://main\nQUOTED="some value"\n' > "$env_file"
     local rendered

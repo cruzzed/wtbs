@@ -28,6 +28,15 @@ list_worktrees() {
     git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}'
 }
 
+# Default worktree path for a branch: a sibling directory of the main repo
+# named <repo>-<branch>, with slashes in the branch name becoming dashes so
+# the path stays a single directory. Names stay natural/full-length; the
+# valet strap's valet-check-name warns when a name would break nginx.
+default_worktree_path() {
+    local main_root="$1" branch="$2"
+    echo "$(dirname "$main_root")/$(basename "$main_root")-${branch//\//-}"
+}
+
 # Create a worktree for a branch at a path. If the branch does not exist yet,
 # create it from the optional base ref (defaults to HEAD).
 create_worktree() {

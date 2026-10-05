@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Clone the source database ($DB_DATABASE from the hook environment) into a
+# new database. Idempotent: an existing target is skipped unless --force.
+set -euo pipefail
+
+target="${1:?usage: db-clone <target-db> [--force]}"
+source_db="${DB_DATABASE:?DB_DATABASE is not set — hooks should export the main repo .env}"
+
+host="${DB_HOST:-127.0.0.1}"
+port="${DB_PORT:-3306}"
+user="${DB_USERNAME:-root}"
+# MYSQL_PWD keeps the password out of process listings.
+export MYSQL_PWD="${DB_PASSWORD:-}"
+
+quote_id() { printf '`%s`' "${1//\`/\`\`}"; }
+like_literal() { local v="$1"; v="${v//\\/\\\\}"; v="${v//\'/\\\'}"; printf '%s' "$v"; }
+
+db_exists() {
+    echo "SHOW DATABASES LIKE '$(like_literal "$1")';" \
+        | mysql --host="$host" --port="$port" --user="$user" \
+        | grep -qx "$1"
+}
+
+if db_exists "$target"; then
+    if [[ "${2:-}" == "--force" ]]; then
+        echo "DROP DATABASE IF EXISTS $(quote_id "$target");" \
+            | mysql --host="$host" --port="$port" --user="$user"
+    else
+        echo "db-clone: database $target already exists; skipping (use --force to re-clone)"
+        exit 0
+    fi
+fi
+
+echo "CREATE DATABASE IF NOT EXISTS $(quote_id "$target") CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
+    | mysql --host="$host" --port="$port" --user="$user"
+mysqldump --host="$host" --port="$port" --user="$user" --single-transaction "$source_db" \
+    | mysql --host="$host" --port="$port" --user="$user" "$target"
+echo "db-clone: cloned $source_db -> $target"
