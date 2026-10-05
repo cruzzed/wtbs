@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Retarget the shared ngrok tunnel ($NGROK_SHARED_URL) to THIS checkout.
+#
+# One verb, two strategies:
+#   valet installed  -> kill-and-respawn the dedicated tunnel process with a
+#                       host-header pointing at this checkout's valet site
+#   otherwise        -> sacred-port swap: kill whatever serves on
+#                       $NGROK_SHARE_PORT, then re-serve the project there
+#                       via its `serve` preset (.wtbs/serve), and make sure
+#                       the tunnel to that fixed port exists
+#
+# --handback (run by the destroy hook): valet mode retargets the tunnel to
+# the main repo's site; port mode frees the sacred port. Best effort.
+set -euo pipefail
+
+url="${NGROK_SHARED_URL:?set NGROK_SHARED_URL in your main repo .env (e.g. NGROK_SHARED_URL=your-reserved.ngrok.dev)}"
+share_port="${NGROK_SHARE_PORT:-8787}"
+handback=0
+[[ "${1:-}" == "--handback" ]] && handback=1
+
+# Steal guard: by default the shared URL is registered to the main repo only,
+# and a worktree share is rejected. Handback (returning the URL) is never
+# guarded. ngrok-guard resolves via PATH alongside this script.
+if [[ $handback -eq 0 ]]; then
+    ngrok-guard
+fi
+
+have_valet=0
+command -v valet >/dev/null 2>&1 && have_valet=1
+
+valet_tld() {
+    local tld="test" config detected
+    config="${VALET_CONFIG:-$HOME/.config/valet/config.json}"
+    if [[ -f "$config" ]]; then
+        detected="$(grep -oE '"tld"[[:space:]]*:[[:space:]]*"[^"]+"' "$config" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+        [[ -n "${detected:-}" ]] && tld="$detected"
+    fi
+    echo "$tld"
+}
+
+kill_tunnel() {
+    pkill -f "ngrok http.*${url}" 2>/dev/null || true
+    sleep 1  # let the old tunnel release the reserved URL
+}
+
+respawn_tunnel_valet() {
+    local site="$1"
+    kill_tunnel
+    nohup ngrok http --url="$url" --host-header=rewrite "${site}.$(valet_tld)" 80 \
+        >/dev/null 2>&1 &
+    echo "ngrok-share: https://${url} -> ${site}.$(valet_tld) (valet)"
+}
+
+kill_port_listener() {
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k -n tcp "$share_port" 2>/dev/null || true
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -ti "tcp:${share_port}" 2>/dev/null | xargs -r kill || true
+    fi
+    sleep 1
+}
+
+ensure_tunnel_port() {
+    if ! pgrep -f "ngrok http.*${url}" >/dev/null 2>&1; then
+        nohup ngrok http --url="$url" "$share_port" >/dev/null 2>&1 &
+        sleep 1
+    fi
+}
+
+# Spawn a serve preset bound to the sacred port.
+spawn_serve() {
+    local checkout="$1"
+    local preset="$checkout/.wtbs/serve"
+    [[ -f "$preset" ]] || preset="${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}/.wtbs/serve"
+    if [[ ! -f "$preset" ]]; then
+        echo "ngrok-share: no serve preset found — add .wtbs/serve so the strap knows how to serve this project" >&2
+        return 1
+    fi
+    (
+        cd "$checkout"
+        # CRLF checkouts (core.autocrlf) corrupt bash syntax; strip trailing CR.
+        WTBS_PORT_SERVE="$share_port" nohup bash <(sed 's/\r$//' "$preset") >/dev/null 2>&1 &
+    )
+}
+
+if [[ $handback -eq 1 ]]; then
+    if [[ $have_valet -eq 1 ]]; then
+        main_site="$(basename "${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}" | tr '[:upper:]' '[:lower:]')"
+        respawn_tunnel_valet "$main_site"
+        echo "ngrok-share: handed https://${url} back to the main repo"
+    else
+        kill_port_listener
+        echo "ngrok-share: freed port ${share_port}; run 'wtbs . share' (or 'share' from the main repo) to reclaim https://${url}"
+    fi
+    exit 0
+fi
+
+if [[ $have_valet -eq 1 ]]; then
+    respawn_tunnel_valet "${WTBS_SITE:?WTBS_SITE is not set}"
+else
+    kill_port_listener
+    ensure_tunnel_port
+    spawn_serve "${WTBS_WORKTREE_ROOT:?WTBS_WORKTREE_ROOT is not set}"
+    echo "ngrok-share: https://${url} -> localhost:${share_port} (${WTBS_SITE:-worktree})"
+fi

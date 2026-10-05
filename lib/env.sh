@@ -43,12 +43,6 @@ update_env_key() {
     fi
 }
 
-# Remove the WORKTREE_BOOTSTRAP idempotency marker from an .env file.
-remove_marker() {
-    local file="$1"
-    sed -i '/^# WORKTREE_BOOTSTRAP=/d' "$file"
-}
-
 # Export every KEY=VALUE pair from an .env file into the environment.
 # Best-effort: blank lines and comments are skipped, an optional `export `
 # prefix is accepted, and matching surrounding quotes are stripped. Values are
@@ -71,14 +65,4 @@ export_env_file() {
         fi
         export "$key=$value"
     done < "$file"
-}
-
-# Append a fresh marker line.
-write_marker() {
-    local file="$1"
-    local branch="$2"
-    local offset="$3"
-    local db_name="$4"
-    remove_marker "$file"
-    echo "# WORKTREE_BOOTSTRAP=branch:${branch}:offset:${offset}:db:${db_name}" >> "$file"
 }

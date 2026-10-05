@@ -14,7 +14,7 @@ source "$LIB_DIR/bootstrap.sh"
 
 show_help() {
     cat <<'EOF'
-Usage: worktree-bootstrap <command> [options]
+Usage: wtbs <command> [options]
 
 Commands:
   create <branch>        Create a new worktree and bootstrap it.
@@ -22,25 +22,31 @@ Commands:
                          Bootstrap the current worktree directory.
   destroy <branch|path>  Destroy a worktree and free its resources.
   exec <branch|path> [cmd...]
-                         Run a command (or a config `aliases` entry) inside a
-                         worktree: its directory, .env, and venv/bin dirs.
-                         With no command, lists the project's aliases.
+                         Run a preset/alias/command inside a worktree: its
+                         directory, .env, straps, and bin dirs. With no
+                         command, lists what's available.
   <branch|path> [cmd...] Shorthand for exec.
+  straps                 List available straps (worktree > main > bundled).
+  strap customize <name> Copy a bundled strap into .wtbs/straps/<name> for
+                         editing (the local copy then shadows the bundled).
+  strap init <name>      Scaffold a new project strap in .wtbs/straps/.
   --help                 Show this help.
 
 Global options (may appear in any position for create/bootstrap/destroy;
 before the worktree name for exec/shorthand):
-  --dry-run              Preview without making changes.
-  --force-clone          Drop and re-create the target database.
-  --check-redis          Include Redis port in availability checks.
-  --check-mailhog        Include MailHog port in availability checks.
+  --dry-run              Preview without making changes; on create this
+                         renders the full bootstrap plan (merged straps,
+                         ports, env updates, and every hook command).
   --main-repo <path>     Override path to the main repository.
   --config <path>        Override config file path.
   --base <ref>           Base ref for a new branch (create only; default: HEAD).
   --dir <name>           Custom worktree directory name (create only; default:
                          <repo>-<branch> with every segment truncated to 4
-                         chars, keeping valet server names short for nginx).
+                         chars, keeping directory names short).
   --delete-branch        Also delete the branch after destroy.
+
+Config (.wtbs.yml): straps, copy, db_name, ports, env, hooks, aliases —
+see examples/ and the README.
 EOF
 }
 
@@ -55,9 +61,6 @@ main() {
         case "$1" in
             --help|-h) show_help; exit 0 ;;
             --dry-run) DRY_RUN=1 ;;
-            --force-clone) FORCE_CLONE=1 ;;
-            --check-redis) CHECK_REDIS=1 ;;
-            --check-mailhog) CHECK_MAILHOG=1 ;;
             --delete-branch) DELETE_BRANCH=1 ;;
             --main-repo) shift; [[ $# -gt 0 ]] || fatal "--main-repo requires a value"; MAIN_ROOT_OVERRIDE="$1" ;;
             --config) shift; [[ $# -gt 0 ]] || fatal "--config requires a value"; CONFIG_PATH_OVERRIDE="$1" ;;
@@ -71,7 +74,7 @@ main() {
                     # through verbatim (including -flags), so stop global flag
                     # parsing and dispatch immediately.
                     case "$command" in
-                        create|bootstrap|destroy) ;;
+                        create|bootstrap|destroy|straps|strap) ;;
                         exec)
                             shift
                             [[ $# -gt 0 ]] || fatal "exec requires a branch or path"
@@ -108,6 +111,23 @@ main() {
         destroy)
             [[ ${#positionals[@]} -ge 1 ]] || fatal "destroy requires a branch or path"
             cmd_destroy "${positionals[0]}"
+            ;;
+        straps)
+            cmd_straps
+            ;;
+        strap)
+            [[ ${#positionals[@]} -ge 1 ]] || fatal "strap requires a subcommand: customize | init"
+            case "${positionals[0]}" in
+                customize)
+                    [[ ${#positionals[@]} -ge 2 ]] || fatal "strap customize requires a strap name"
+                    cmd_strap_customize "${positionals[1]}"
+                    ;;
+                init)
+                    [[ ${#positionals[@]} -ge 2 ]] || fatal "strap init requires a strap name"
+                    cmd_strap_init "${positionals[1]}"
+                    ;;
+                *) fatal "unknown strap subcommand: ${positionals[0]} (customize | init)" ;;
+            esac
             ;;
         *) fatal "unknown command: $command" ;;
     esac

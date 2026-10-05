@@ -2,19 +2,18 @@
 
 setup() {
     export TMP_ORIGIN="$(mktemp -d)"
-    export SCRIPT="$BATS_TEST_DIRNAME/../../worktree-bootstrap.sh"
-    # Hermetic valet TLD detection: no machine config during tests.
-    export VALET_CONFIG="/nonexistent/valet-config.json"
+    export SCRIPT="$BATS_TEST_DIRNAME/../../wtbs.sh"
     cd "$TMP_ORIGIN"
     git init -q
     git config user.email "test@example.com"
     git config user.name "Test User"
+    # This machine sets core.autocrlf=true globally; committed scripts must
+    # keep LF endings or their shebangs break in worktree checkouts.
+    git config core.autocrlf false
     git commit --allow-empty -q -m "initial"
 }
 
 teardown() {
-    # Remove every registered worktree (created either directly or by the
-    # tool under shortened/custom names), then the origin itself.
     if [[ -d "$TMP_ORIGIN" ]]; then
         local wt
         git -C "$TMP_ORIGIN" worktree list --porcelain 2>/dev/null \
@@ -36,431 +35,290 @@ teardown() {
     [[ "$output" == *"feature/smoke"* ]]
 }
 
+@test "create with no config bootstraps just the worktree" {
+    run "$SCRIPT" create feature/plain
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ports ............... <none declared>"* ]]
+    [[ "$output" == *"straps .............. <none>"* ]]
+}
+
 @test "bootstrap prints dry-run report from a worktree" {
     git branch feature/test
-    cat > .worktree-bootstrap.yml <<'EOF'
-database:
-  driver: sqlite
-  sqlite_source_path: main.sqlite
-EOF
-    echo 'DB_DATABASE=main.sqlite' > .env
-    touch main.sqlite
-    git worktree add -q "${TMP_ORIGIN}-feature-test" feature/test
-    cd "${TMP_ORIGIN}-feature-test"
+    git worktree add -q "$(dirname "$TMP_ORIGIN")/wt-dry" feature/test
+    cd "$(dirname "$TMP_ORIGIN")/wt-dry"
     run "$SCRIPT" bootstrap --dry-run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"worktree-bootstrap preflight"* ]]
-    [[ "$output" == *"branch   : feature/test"* ]]
-    [[ "$output" == *"would copy config files"* ]]
-    [[ "$output" == *"would update .env and register offset"* ]]
-    [[ "$output" == *"worktree-bootstrap report"* ]]
+    [[ "$output" == *"wtbs preflight"* ]]
+}
+
+@test "bootstrap applies env entries with branch, slug, site and port templates" {
+    echo 'APP_URL=https://main.test' > .env
+    cat > .wtbs.yml <<'EOF'
+copy: [.env]
+db_name: "myapp_{branch_slug}"
+ports:
+  app: 8080
+  serve: 8000
+env:
+  APP_PORT: "{ports.app}"
+  APP_URL: "https://{site}.test"
+  SERVE_PORT: "{ports.serve}"
+  DB_DATABASE: "{db_name}"
+  BRANCH_COPY: "{branch}"
+EOF
+    run "$SCRIPT" create feature/templates
+    [ "$status" -eq 0 ]
+    local wt offset
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    # The offset depends on which ports are actually free on this machine.
+    offset="$(cut -f2 .wtbs/registry.tsv | head -n1)"
+    grep -qx "APP_PORT=$((8080 + offset))" "$wt/.env"
+    grep -qx "SERVE_PORT=$((8000 + offset))" "$wt/.env"
+    grep -q "^APP_URL=https://.*\.test$" "$wt/.env"
+    grep -qx "DB_DATABASE=myapp_feature_templates" "$wt/.env"
+    grep -qx "BRANCH_COPY=feature/templates" "$wt/.env"
+}
+
+@test "env entries can preserve original values with {env.KEY}" {
+    printf 'DATABASE_URL=postgres://main/db\n' > .env
+    cat > .wtbs.yml <<'EOF'
+copy: [.env]
+env:
+  PARENT_DATABASE_URL: "{env.DATABASE_URL}"
+  DATABASE_URL: "postgres://localhost/{db_name}"
+EOF
+    run "$SCRIPT" create feature/envref
+    [ "$status" -eq 0 ]
+    local wt
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    grep -qx "PARENT_DATABASE_URL=postgres://main/db" "$wt/.env"
+    grep -qx "DATABASE_URL=postgres://localhost/wt_feature_envref" "$wt/.env"
+}
+
+@test "hooks run with the main repo .env exported even after env rewrites" {
+    # Regression: the clone SOURCE must stay visible to hooks even though the
+    # worktree .env gets DB_DATABASE rewritten to the target.
+    printf 'DB_DATABASE=main_source\n' > .env
+    cat > .wtbs.yml <<'EOF'
+copy: [.env]
+env:
+  DB_DATABASE: "{db_name}"
+hooks:
+  create:
+    - "echo $DB_DATABASE > hook-source.out"
+EOF
+    run "$SCRIPT" create feature/hookenv
+    [ "$status" -eq 0 ]
+    local wt
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    grep -qx "main_source" "$wt/hook-source.out"
+    grep -qx "DB_DATABASE=wt_feature_hookenv" "$wt/.env"
+}
+
+@test "destroy runs hooks.destroy before teardown" {
+    cat > .wtbs.yml <<'EOF'
+hooks:
+  destroy:
+    - "echo destroyed-hook {db_name} > {main_repo}/destroy.log"
+EOF
+    run "$SCRIPT" create feature/destr
+    [ "$status" -eq 0 ]
+    run "$SCRIPT" destroy feature/destr
+    [ "$status" -eq 0 ]
+    grep -qx "destroyed-hook wt_feature_destr" "$TMP_ORIGIN/destroy.log"
 }
 
 @test "destroy prints dry-run report without errors" {
-    git branch feature/test
-    run "$SCRIPT" destroy feature/test --dry-run
+    git branch feature/dry
+    git worktree add -q "$(dirname "$TMP_ORIGIN")/wt-destroy-dry" feature/dry
+    run "$SCRIPT" destroy feature/dry --dry-run
     [ "$status" -eq 0 ]
     [[ "$output" == *"would destroy"* ]]
+    [[ -d "$(dirname "$TMP_ORIGIN")/wt-destroy-dry" ]]
 }
 
-@test "destroy succeeds when .env exists without marker" {
-    git branch feature/no-marker
-    cat > .worktree-bootstrap.yml <<'EOF'
-database:
-  driver: sqlite
-  sqlite_source_path: main.sqlite
-EOF
-    echo 'DB_DATABASE=main.sqlite' > .env
-    touch main.sqlite
-    git worktree add -q "${TMP_ORIGIN}-feature-no-marker" feature/no-marker
-    cd "${TMP_ORIGIN}-feature-no-marker"
-    run "$SCRIPT" destroy feature/no-marker
+@test "destroy falls back to computed db name without a registry entry" {
+    git branch feature/noreg
+    git worktree add -q "$(dirname "$TMP_ORIGIN")/wt-noreg" feature/noreg
+    run "$SCRIPT" destroy feature/noreg
     [ "$status" -eq 0 ]
-    [[ ! -d "${TMP_ORIGIN}-feature-no-marker" ]]
-}
-
-@test "bootstrap dry-run skips database driver availability checks" {
-    git branch feature/dry-db
-    cat > .worktree-bootstrap.yml <<'EOF'
-database:
-  driver: _nonexistent_probe_driver
-EOF
-    echo 'DB_DATABASE=main' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-dry-db" feature/dry-db
-    cd "${TMP_ORIGIN}-feature-dry-db"
-    run "$SCRIPT" bootstrap --dry-run
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"[dry-run] would create/clone database"* ]]
-    [[ "$output" != *"driver not available"* ]]
-}
-
-@test "bootstrap applies env_updates with branch, slug, site and port templates" {
-    git branch feature/env
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: sqlite
-  sqlite_source_path: main.sqlite
-env_updates:
-  APP_URL: "https://{site}.test"
-  CUSTOM_KEY: "{branch_slug}-{ports.app}"
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'DB_DATABASE=main.sqlite' > .env
-    touch main.sqlite
-    git worktree add -q "${TMP_ORIGIN}-feature-env" feature/env
-    cd "${TMP_ORIGIN}-feature-env"
-    run "$SCRIPT" bootstrap
-    [ "$status" -eq 0 ]
-    local expected_site
-    expected_site="$(basename "${TMP_ORIGIN}-feature-env" | tr '[:upper:]' '[:lower:]')"
-    grep -qxF "APP_URL=https://${expected_site}.test" .env
-    local offset app_port
-    offset="$(grep -oE 'offset:[0-9]+' .env | cut -d: -f2)"
-    app_port=$((8080 + offset))
-    grep -qxF "CUSTOM_KEY=feature_env-${app_port}" .env
-    grep -qxF "DB_DATABASE=${TMP_ORIGIN}-feature-env/wt_feature_env.sqlite" .env
-    # env_updates is defined, so no built-in Laravel keys are written.
-    ! grep -qE '^APP_PORT=' .env
-    ! grep -qE '^FORWARD_DB_PORT=' .env
-    ! grep -qE '^VITE_PORT=' .env
-}
-
-@test "destroy runs rendered commands.destroy hook before teardown" {
-    git branch feature/destroy-hook
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: sqlite
-  sqlite_source_path: main.sqlite
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-  destroy:
-    - "touch destroyed-{site}"
-YAML
-    echo 'DB_DATABASE=main.sqlite' > .env
-    touch main.sqlite
-    git worktree add -q "${TMP_ORIGIN}-feature-destroy-hook" feature/destroy-hook
-    cd "${TMP_ORIGIN}-feature-destroy-hook"
-    run "$SCRIPT" bootstrap
-    [ "$status" -eq 0 ]
-    cd "$TMP_ORIGIN"
-    run "$SCRIPT" destroy feature/destroy-hook
-    [ "$status" -eq 0 ]
-    local expected_site
-    expected_site="$(basename "${TMP_ORIGIN}-feature-destroy-hook" | tr '[:upper:]' '[:lower:]')"
-    [[ -f "${TMP_ORIGIN}/destroyed-${expected_site}" ]]
-    [[ ! -d "${TMP_ORIGIN}-feature-destroy-hook" ]]
+    [[ ! -d "$(dirname "$TMP_ORIGIN")/wt-noreg" ]]
 }
 
 @test "global flags are accepted in any position" {
-    git branch feature/smoke
+    git branch feature/flags
     echo 'DB_DATABASE=main' > .env
-    run "$SCRIPT" create --dry-run feature/smoke
+    run "$SCRIPT" --dry-run create feature/flags
     [ "$status" -eq 0 ]
-    [[ "$output" == *"would create worktree"* ]]
-    run "$SCRIPT" --dry-run destroy feature/smoke
+    run "$SCRIPT" create feature/flags --dry-run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"would destroy"* ]]
+    [[ "$output" == *"dry-run"* ]]
 }
 
 @test "create --dry-run renders the full bootstrap plan" {
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: sqlite
-  sqlite_source_path: main.sqlite
-env_updates:
-  CUSTOM_KEY: "{branch_slug}-{ports.app}"
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'DB_DATABASE=main.sqlite' > .env
+    echo 'DB_DATABASE=main' > .env
+    cat > .wtbs.yml <<'EOF'
+copy: [.env]
+ports:
+  app: 8080
+env:
+  APP_PORT: "{ports.app}"
+hooks:
+  create:
+    - "echo setup {branch_slug}"
+  destroy:
+    - "echo teardown"
+EOF
     run "$SCRIPT" create feature/plan --dry-run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"would create worktree"* ]]
-    [[ "$output" == *"does not exist; would create from HEAD"* ]]
-    [[ "$output" == *"worktree-bootstrap preflight"* ]]
-    [[ "$output" == *"branch   : feature/plan"* ]]
-    [[ "$output" == *"driver   : sqlite"* ]]
-    [[ "$output" == *"[dry-run] env: CUSTOM_KEY=feature_plan-"* ]]
-    [[ "$output" == *"[dry-run] would run: true"* ]]
-    [[ "$output" == *"worktree-bootstrap report"* ]]
-    # Dry-run must not create the port registry.
-    [[ ! -e .worktree-bootstrap/ports.tsv ]]
+    [[ "$output" == *"would copy config files: .env"* ]]
+    # The offset depends on which ports are actually free on this machine.
+    [[ "$output" =~ env:\ APP_PORT=808[0-9] ]]
+    [[ "$output" == *"would run: echo setup feature_plan"* ]]
+    [[ "$output" == *"would run: echo teardown"* ]]
+    [[ "$output" == *"ports.app"* ]]
+}
+
+@test "create registers branch state in the registry" {
+    run "$SCRIPT" create feature/reg
+    [ "$status" -eq 0 ]
+    grep -q "^feature/reg" .wtbs/registry.tsv
+}
+
+@test "create --dry-run does not touch the registry" {
+    run "$SCRIPT" create feature/noreg-dry --dry-run
+    [ "$status" -eq 0 ]
+    [ ! -f .wtbs/registry.tsv ]
 }
 
 @test "bootstrap fails fast when a hook script is missing from the worktree" {
-    git branch feature/missing-hook
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-commands:
-  install:
-    - "scripts/setup.sh"
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-missing-hook" feature/missing-hook
-    cd "${TMP_ORIGIN}-feature-missing-hook"
-    run "$SCRIPT" bootstrap
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"hook script not found in worktree: scripts/setup.sh"* ]]
+    cat > .wtbs.yml <<'EOF'
+hooks:
+  create:
+    - "scripts/missing-hook.sh {branch_slug}"
+EOF
+    run "$SCRIPT" create feature/missinghook
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"hook script not found in worktree: scripts/missing-hook.sh"* ]]
 }
 
 @test "destroy prunes the worktree so the branch is immediately deletable" {
-    git branch feature/prune
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-prune" feature/prune
-    cd "${TMP_ORIGIN}-feature-prune"
-    run "$SCRIPT" bootstrap
+    run "$SCRIPT" create feature/prune
     [ "$status" -eq 0 ]
-    cd "$TMP_ORIGIN"
     run "$SCRIPT" destroy feature/prune
     [ "$status" -eq 0 ]
-    [[ ! -d "${TMP_ORIGIN}-feature-prune" ]]
-    # No manual git worktree prune needed before deleting the branch.
-    git branch -D feature/prune
+    run git branch -d feature/prune
+    [ "$status" -eq 0 ]
 }
 
 @test "destroy --delete-branch removes the branch" {
-    git branch feature/delbr
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-delbr" feature/delbr
-    cd "$TMP_ORIGIN"
-    run "$SCRIPT" destroy --delete-branch feature/delbr
+    run "$SCRIPT" create feature/delbr
     [ "$status" -eq 0 ]
-    [[ ! -d "${TMP_ORIGIN}-feature-delbr" ]]
-    ! git show-ref --verify --quiet refs/heads/feature/delbr
+    run "$SCRIPT" destroy feature/delbr --delete-branch
+    [ "$status" -eq 0 ]
+    ! git show-ref --verify --quiet "refs/heads/feature/delbr"
 }
 
-@test "database.create/drop commands replace driver dispatch" {
-    git branch feature/dbcmd
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-  create: "touch {worktree_root}/db-created-{branch_slug}"
-  drop: "touch {main_repo}/db-dropped-{branch_slug}"
-env_updates:
-  DB_NAME: "{db_name}"
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-dbcmd" feature/dbcmd
-    cd "${TMP_ORIGIN}-feature-dbcmd"
-    run "$SCRIPT" bootstrap
+@test "destroy removes the registry row" {
+    run "$SCRIPT" create feature/regrow
     [ "$status" -eq 0 ]
-    [[ -f "db-created-feature_dbcmd" ]]
-    grep -qxF "DB_NAME=wt_feature_dbcmd" .env
-    # Command-based provisioning owns its env: no built-in DB_DATABASE write.
-    ! grep -qE '^DB_DATABASE=' .env
-    cd "$TMP_ORIGIN"
-    run "$SCRIPT" destroy feature/dbcmd
+    grep -q "^feature/regrow" .wtbs/registry.tsv
+    run "$SCRIPT" destroy feature/regrow
     [ "$status" -eq 0 ]
-    [[ -f "${TMP_ORIGIN}/db-dropped-feature_dbcmd" ]]
+    ! grep -q "^feature/regrow" .wtbs/registry.tsv
 }
 
-@test "driver none skips the database step silently" {
-    git branch feature/nodb
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-nodb" feature/nodb
-    cd "${TMP_ORIGIN}-feature-nodb"
-    run "$SCRIPT" bootstrap
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"database ............ skipped (disabled)"* ]]
-    [[ "$output" != *"command not found"* ]]
-    ! grep -qE '^DB_DATABASE=' .env
-    cd "$TMP_ORIGIN"
-    run "$SCRIPT" destroy feature/nodb
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"command not found"* ]]
-}
-
-@test "create reads DB credentials from main .env before worktree .env exists" {
-    git branch feature/mysql-create
-    cat > .worktree-bootstrap.yml <<'YAML'
-copy_from_main:
-  - .env
+@test "v0.3 config keys are rejected with a migration pointer" {
+    cat > .wtbs.yml <<'EOF'
 database:
   driver: mysql
-  source_env_key: DB_DATABASE
 commands:
   install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'DB_DATABASE=main_production_db' > .env
-
-    export TMP_BIN="$(mktemp -d)"
-    export PATH="$TMP_BIN:$PATH"
-    export MYSQLDUMP_ARGS="$(mktemp)"
-    cat > "$TMP_BIN/mysqldump" <<'EOF'
-#!/usr/bin/env bash
-echo "$*" > "$MYSQLDUMP_ARGS"
-echo "-- mock dump"
+    - npm ci
 EOF
-    cat > "$TMP_BIN/mysql" <<'EOF'
-#!/usr/bin/env bash
-cat > /dev/null
+    run "$SCRIPT" create feature/legacy
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"v0.3 config keys"* ]]
+    [[ "$output" == *"examples/"* ]]
+}
+
+@test "sqlite strap clones and drops the worktree database file" {
+    echo 'DB_DATABASE=db.sqlite3' > .env
+    echo "db-content" > db.sqlite3
+    # Local strap copy: this environment may normalize the executable bits of
+    # untracked repo files; bundled-resolution itself is covered in straps.bats.
+    mkdir -p .wtbs/straps
+    cp -R "$BATS_TEST_DIRNAME/../../straps/sqlite" .wtbs/straps/sqlite
+    chmod 755 .wtbs/straps/sqlite/db-clone .wtbs/straps/sqlite/db-drop
+    git add -A && git commit -q -m "add env, db and strap"
+    cat > .wtbs.yml <<'EOF'
+straps: [sqlite]
+copy: [.env]
 EOF
-    chmod +x "$TMP_BIN/mysqldump" "$TMP_BIN/mysql"
-
-    run "$SCRIPT" create feature/mysql-create
+    git add .wtbs.yml && git commit -q -m "config"
+    run "$SCRIPT" create feature/sqlstrap
     [ "$status" -eq 0 ]
-    # The fresh worktree has no .env until copy_from_main seeds it mid-run;
-    # mysqldump must still receive the source db from the main repo .env.
-    [[ "$(cat "$MYSQLDUMP_ARGS")" == *"--single-transaction main_production_db"* ]]
-    rm -rf "$TMP_BIN" "$MYSQLDUMP_ARGS"
+    [[ "$output" == *"straps .............. sqlite"* ]]
+    local wt
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    [[ "$(cat "$wt/wt_feature_sqlstrap.sqlite")" == "db-content" ]]
+    grep -qx "DB_DATABASE=$wt/wt_feature_sqlstrap.sqlite" "$wt/.env"
+    run "$SCRIPT" destroy feature/sqlstrap
+    [ "$status" -eq 0 ]
+    [[ ! -e "$wt" ]]
 }
 
-@test "unknown driver warns cleanly and reports the skip" {
-    git branch feature/bogus
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: _bogus_driver
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    echo 'X=1' > .env
-    git worktree add -q "${TMP_ORIGIN}-feature-bogus" feature/bogus
-    cd "${TMP_ORIGIN}-feature-bogus"
-    run "$SCRIPT" bootstrap
+@test "ngrok strap rejects a worktree share by default" {
+    printf 'NGROK_SHARED_URL=test-reserved.ngrok.dev\n' > .env
+    # Hermetic bundled dir: the strict steal guard only applies to bundled
+    # straps, and this environment may normalize repo file modes.
+    export WTBS_STRAPS_DIR="$(mktemp -d)"
+    mkdir -p "$WTBS_STRAPS_DIR/ngrok"
+    cp "$BATS_TEST_DIRNAME/../../straps/ngrok/"* "$WTBS_STRAPS_DIR/ngrok/"
+    chmod 755 "$WTBS_STRAPS_DIR/ngrok/ngrok-share" "$WTBS_STRAPS_DIR/ngrok/ngrok-guard"
+    cat > .wtbs.yml <<'EOF'
+straps: [ngrok]
+copy: [.env]
+EOF
+    run "$SCRIPT" create feature/steal
     [ "$status" -eq 0 ]
-    [[ "$output" == *"_bogus_driver driver not available"* ]]
-    [[ "$output" != *"command not found"* ]]
-    [[ "$output" == *"database ............ skipped (_bogus_driver driver not available)"* ]]
-}
-
-@test "create --dry-run shows the derived valet site name" {
-    source "$BATS_TEST_DIRNAME/../../lib/utils.sh"
-    git branch feature/smoke
-    local expected_site
-    expected_site="$(shorten_name "$(basename "$TMP_ORIGIN")-feature/smoke" | tr '[:upper:]' '[:lower:]')"
-    run "$SCRIPT" create feature/smoke --dry-run
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"[dry-run] valet site: ${expected_site}.test"* ]]
-}
-
-@test "create --dry-run reads the valet TLD from valet config" {
-    git branch feature/smoke
-    export VALET_CONFIG="$(mktemp)"
-    echo '{"tld": "develop"}' > "$VALET_CONFIG"
-    run "$SCRIPT" create feature/smoke --dry-run
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"[dry-run] valet site: "*".develop"* ]]
-    rm -f "$VALET_CONFIG"
-}
-
-@test "create --dry-run warns when the valet server name exceeds the nginx bucket" {
-    # Segments truncate to 4 chars, so crossing 64 takes many segments:
-    # <repo>-feat-alph-brav-char-delt-echo-foxt-golf-hote-indi + .test + www.
-    git branch feature/alpha/bravo/charlie/delta/echo/foxtrot/golf/hotel/india
-    run "$SCRIPT" create feature/alpha/bravo/charlie/delta/echo/foxtrot/golf/hotel/india --dry-run
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"EXCEEDS nginx's default server_names_hash_bucket_size"* ]]
-    [[ "$output" == *"ALL valet sites"* ]]
+    run "$SCRIPT" exec feature/steal share
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing to hand https://test-reserved.ngrok.dev"* ]]
+    rm -rf "$WTBS_STRAPS_DIR"
 }
 
 @test "create --dir uses a custom directory name" {
-    git branch feature/customdir
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
-    run "$SCRIPT" create feature/customdir --dir wt-customdir
+    run "$SCRIPT" create feature/custom --dir wt-customdir
     [ "$status" -eq 0 ]
-    [ -d "$(dirname "$TMP_ORIGIN")/wt-customdir" ]
-    git worktree list --porcelain | grep -qx "worktree $(dirname "$TMP_ORIGIN")/wt-customdir"
+    [[ -d "$(dirname "$TMP_ORIGIN")/wt-customdir" ]]
+    [[ "$output" == *"wt-customdir"* ]]
 }
 
 @test "create --dir rejects traversal and slashes" {
-    git branch feature/customdir
-    run "$SCRIPT" create feature/customdir --dir ../evil
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"--dir must be a plain directory name"* ]]
-    run "$SCRIPT" create feature/customdir --dir a/b
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"--dir must be a plain directory name"* ]]
+    run "$SCRIPT" create feature/bad --dir "../escape"
+    [ "$status" -eq 1 ]
+    run "$SCRIPT" create feature/bad2 --dir "a/b"
+    [ "$status" -eq 1 ]
 }
 
 @test "destroy resolves a --dir worktree by branch name" {
-    git branch feature/customdir
-    cat > .worktree-bootstrap.yml <<'YAML'
-database:
-  driver: none
-commands:
-  install:
-    - "true"
-  build:
-    - "true"
-YAML
     run "$SCRIPT" create feature/customdir --dir wt-customdir
     [ "$status" -eq 0 ]
     run "$SCRIPT" destroy feature/customdir
     [ "$status" -eq 0 ]
-    [ ! -d "$(dirname "$TMP_ORIGIN")/wt-customdir" ]
+    [[ ! -d "$(dirname "$TMP_ORIGIN")/wt-customdir" ]]
 }
 
 @test "destroy by branch name never resolves to the main repo" {
-    # The current branch is checked out at the main repo; destroying it by
-    # name must not touch the main checkout.
-    local current
-    current="$(git rev-parse --abbrev-ref HEAD)"
-    run "$SCRIPT" destroy "$current" --dry-run
+    run "$SCRIPT" destroy main --dry-run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"would destroy"* ]]
-    [[ "$output" != *"would destroy $TMP_ORIGIN and"* ]]
+    [[ "$output" != *"would destroy $TMP_ORIGIN "* ]]
+    [[ -d "$TMP_ORIGIN" ]]
 }
 
 @test "create --dry-run shortens every name segment to 4 chars" {
-    source "$BATS_TEST_DIRNAME/../../lib/utils.sh"
-    git branch feature/smoke
-    local expected
-    expected="$(dirname "$TMP_ORIGIN")/$(shorten_name "$(basename "$TMP_ORIGIN")-feature/smoke")"
-    run "$SCRIPT" create feature/smoke --dry-run
+    run "$SCRIPT" create feature/shopify-oauth-space-selector --dry-run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"would create worktree $expected "* ]]
-    # Segments truncated: no segment longer than 4 chars in the dir basename.
-    [[ "$(basename "$expected")" != *"feature"* ]]
+    [[ "$output" == *"-feat-shop-oaut-spac-sele"* ]]
 }

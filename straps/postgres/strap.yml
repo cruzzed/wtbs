@@ -1,0 +1,25 @@
+# Postgres per-worktree database strap.
+#
+# On create: clones the main repo's database into {db_name}.
+# On destroy: drops {db_name}.
+#
+# Credentials come from the hook environment, which exports the main repo's
+# .env on a fresh create — so DB_DATABASE is the clone SOURCE:
+#   DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE
+# Maintenance queries (existence checks, CREATE/DROP DATABASE) connect to the
+# "postgres" database unless PG_MAINTENANCE_DB says otherwise.
+#
+# Requires: psql, pg_dump, createdb.
+
+ports:
+  db: 55432
+
+env:
+  DB_DATABASE: "{db_name}"
+  FORWARD_DB_PORT: "{ports.db}"
+
+hooks:
+  create:
+    - "db-clone {db_name}"
+  destroy:
+    - "db-drop {db_name} || true"

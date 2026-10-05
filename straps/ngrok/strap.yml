@@ -1,0 +1,13 @@
+# ngrok singleton strap: ONE reserved ngrok URL shared across all checkouts.
+#
+# The strap's only verb is the handoff — whichever checkout runs
+#   wtbs <branch> share
+# last owns the URL. State lives in the running ngrok process, never in the
+# tool. See README.md for the contract (env vars, strategies, handback).
+
+aliases:
+  share: "ngrok-share"
+
+hooks:
+  destroy:
+    - "ngrok-share --handback || true"

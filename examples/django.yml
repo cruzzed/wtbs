@@ -1,31 +1,22 @@
-name: Django Project
-copy_from_main:
-  - .env
+# Django + uv. Only the serve port matters — declare exactly what you use.
+# With a cloud/branching database (Neon, Supabase, ...), the DB lifecycle is
+# a hook script that owns rewriting DATABASE_URL in the worktree .env — see
+# the README ("project straps") for the Neon-shaped variant.
 
-env_updates:
-  APP_PORT: "{ports.app}"
-
-database:
-  driver: sqlite
-  source_env_key: DB_DATABASE
-  sqlite_source_path: db.sqlite3
+copy: [.env]
 
 ports:
-  base:
-    app: 8080
-    db: 33060
-    vite: 5173
-    serve: 8000
+  serve: 8000
 
-commands:
-  install:
-    - pip install -r requirements.txt
-  build:
-    - python manage.py migrate
-  serve:
-    - "python manage.py runserver {ports.app}"
+env:
+  SERVE_PORT: "{ports.serve}"
+
+hooks:
+  create:
+    - uv sync
+    - uv run python manage.py migrate
 
 aliases:
-  runserver: "python manage.py runserver {ports.serve}"
-  test: "python manage.py test"
-  shell: "python manage.py shell"
+  serve: "uv run python manage.py runserver {ports.serve}"
+  test: "uv run pytest"
+  shell: "uv run python manage.py shell"

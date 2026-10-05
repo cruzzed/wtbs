@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Delete a SQLite database file. Missing files are not an error.
+set -euo pipefail
+
+target="${1:?usage: db-drop <db-file>}"
+rm -f "$target"
+echo "db-drop: deleted $target"

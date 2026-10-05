@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Clone the source database ($DB_DATABASE from the hook environment) into a
+# new database. Idempotent: an existing target is skipped unless --force.
+set -euo pipefail
+
+target="${1:?usage: db-clone <target-db> [--force]}"
+source_db="${DB_DATABASE:?DB_DATABASE is not set — hooks should export the main repo .env}"
+maintenance_db="${PG_MAINTENANCE_DB:-postgres}"
+
+host="${DB_HOST:-127.0.0.1}"
+port="${DB_PORT:-5432}"
+user="${DB_USERNAME:-${USER:-postgres}}"
+# PGPASSWORD keeps the password out of process listings.
+export PGPASSWORD="${DB_PASSWORD:-}"
+
+quote_id() { printf '"%s"' "${1//\"/\"\"}"; }
+like_literal() { printf '%s' "${1//\'/\'\'}"; }
+
+db_exists() {
+    psql --host="$host" --port="$port" --username="$user" -d "$maintenance_db" -tAc \
+        "SELECT 1 FROM pg_database WHERE datname='$(like_literal "$1")'" | grep -q 1
+}
+
+if db_exists "$target"; then
+    if [[ "${2:-}" == "--force" ]]; then
+        psql --host="$host" --port="$port" --username="$user" -d "$maintenance_db" \
+            -c "DROP DATABASE IF EXISTS $(quote_id "$target");"
+    else
+        echo "db-clone: database $target already exists; skipping (use --force to re-clone)"
+        exit 0
+    fi
+fi
+
+psql --host="$host" --port="$port" --username="$user" -d "$maintenance_db" \
+    -c "CREATE DATABASE $(quote_id "$target");"
+pg_dump --host="$host" --port="$port" --username="$user" "$source_db" \
+    | psql --host="$host" --port="$port" --username="$user" -d "$target"
+echo "db-clone: cloned $source_db -> $target"

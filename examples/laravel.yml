@@ -1,46 +1,31 @@
-name: Laravel Project
-copy_from_main:
-  - .env
-
-env_updates:
-  APP_URL: "https://{site}.test"
-  APP_PORT: "{ports.app}"
-  FORWARD_DB_PORT: "{ports.db}"
-  VITE_PORT: "{ports.vite}"
-
-database:
-  driver: mysql
-  name_prefix: myapp_
-  source_env_key: DB_DATABASE
-  host_env_key: DB_HOST
-  port_env_key: DB_PORT
-  user_env_key: DB_USERNAME
-  pass_env_key: DB_PASSWORD
-
-ports:
-  base:
-    app: 8080
-    db: 33060
-    vite: 5173
-    serve: 8000
-    redis: 6379
-    mailhog: 1025
-
+# Laravel + MySQL + Valet, expressed as straps.
 # Sites are served by Valet (park the parent directory of your worktrees):
-# https://{site}.test
+# https://{site}.test — no per-branch serve port needed.
 # valet secure/unsecure restarts nginx internally, so the sudo password may
 # be prompted for during create/destroy.
-commands:
-  install:
+
+straps: [valet, mysql]
+
+copy: [.env]
+
+db_name: "myapp_{branch_slug}"
+
+env:
+  APP_PORT: "{ports.app}"
+  VITE_PORT: "{ports.vite}"
+
+ports:
+  app: 8080
+  vite: 5173
+
+hooks:
+  create:
     - composer install
     - npm ci
-  build:
     - npm run build
-    - "command -v valet >/dev/null && valet secure \"{site}\" || true"
-  destroy:
-    - "command -v valet >/dev/null && valet unsecure \"{site}\" || true"
 
 aliases:
+  serve: "php artisan serve --port {ports.app}"
   tinker: "php artisan tinker"
   migrate: "php artisan migrate"
   test: "php artisan test"
