@@ -82,8 +82,8 @@ everything after the worktree name is passed to the command verbatim):
   name becoming dashes (`MyRepo` + `feature/shopify-oauth-space-selector` →
   `MyRepo-feature-shopify-oauth-space-selector`). Names stay natural and
   full-length — the valet strap resolves nginx-unsafe names automatically
-  (short site name + symlink; `valet-site url|set-url` expose the served
-  URL for project configs), so `--dir` is only needed when you want a
+  (short site name + symlink; the served URL lands in wtbs's per-branch
+  state as `{state.valet_url}`), so `--dir` is only needed when you want a
   specific name
 - `--delete-branch` — also delete the branch after `destroy`
 
@@ -133,6 +133,10 @@ Template tokens available in `env`, `hooks`, `aliases`, and `db_name`:
 - `{db_name}` — the computed database name
 - `{worktree_root}`, `{main_repo}` — absolute paths
 - `{ports.<name>}` — each declared port, shifted by the branch's offset
+- `{state.<key>}` — strap-written per-branch state from wtbs's own state
+  file (`.wtbs/worktrees/<branch-slug>.yml`); the opt-in channel through
+  which a project may consume a strap-provided value — nothing is written
+  into project files unless the project asks for it
 - `{env.KEY}` — the current value of KEY from an env file. In `env:` entries
   this reads the file being rewritten (useful to preserve an original:
   `PARENT_DATABASE_URL: "{env.DATABASE_URL}"`). In `hooks` it reads the
@@ -152,6 +156,15 @@ Hooks run with:
 - the template context exported as `WTBS_*` (`WTBS_BRANCH`, `WTBS_BRANCH_SLUG`,
   `WTBS_SITE`, `WTBS_DB_NAME`, `WTBS_WORKTREE_ROOT`, `WTBS_MAIN_REPO`,
   `WTBS_PORT_<NAME>`)
+- `WTBS_STATE_FILE` — the path of this branch's wtbs-owned state file
+  (`.wtbs/worktrees/<branch-slug>.yml`). Straps record their per-branch
+  values there; the core loads them into the template context as
+  `{state.<key>}`.
+
+Attachment is one-directional: wtbs keeps its state *about* the project in
+`.wtbs/`, but never leaves a trace in project files. The project's `.env`
+is written only by the `env:` entries the project itself declares —
+straps don't add keys to it, and uninstalling wtbs leaves no residue.
 
 Before any work begins, bootstrap verifies that script paths referenced by
 `hooks.*` exist in the worktree checkout and fails fast with a clear message
@@ -189,7 +202,7 @@ A strap fragment may contain `copy`, `db_name`, `ports`, `env`, `hooks`,
 | `mysql` | per-worktree | clones the main DB into `{db_name}` on create, drops it on destroy; declares `ports.db` and rewrites `DB_DATABASE`/`FORWARD_DB_PORT` |
 | `postgres` | per-worktree | same for Postgres |
 | `sqlite` | per-worktree | copies the SQLite file to `{db_name}.sqlite`, rewrites `DB_DATABASE` |
-| `valet` | setup | `valet secure`/`unsecure` hooks; when a name would break nginx it serves a deterministic short name via symlink instead — framework-agnostic: `valet-site url`/`set-url VAR` expose the served URL for project configs |
+| `valet` | setup | `valet secure`/`unsecure` hooks; when a name would break nginx it serves a deterministic short name via symlink instead — the served URL is recorded in wtbs's per-branch state (`{state.valet_url}`); the project's `.env` is never touched |
 | `ngrok` | singleton | ONE reserved ngrok URL shared by all checkouts; `share` verb hands it over, with a steal guard (see `straps/ngrok/README.md`) |
 
 Straps come in three resource shapes:

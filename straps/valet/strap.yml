@@ -11,10 +11,12 @@
 # serves the worktree under a deterministic short name (symlink) instead of
 # failing or warning. The core stays blind to naming.
 #
-# Framework-agnostic by contract: the strap never writes framework keys
-# (like APP_URL). `valet-site url <site>` prints the served URL and
-# `valet-site set-url VAR <site>` sets a caller-chosen .env variable to it —
-# project configs wire their own conventions (see examples/laravel.yml).
+# Attachment is one-directional: the strap records where it serves this
+# worktree in wtbs's own state file (.wtbs/worktrees/<branch>.yml, key
+# valet_url) — never in the project's .env. APP_URL is the project's
+# business (often a static ngrok tunnel for webhooks) and is never touched.
+# Projects opt in to the served URL via {state.valet_url}, or humans run
+# `valet-site url <site>`.
 
 hooks:
   create:

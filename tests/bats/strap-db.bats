@@ -274,15 +274,20 @@ EOF
     [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url myapp-feature-x)" == "https://myapp-feature-x.develop" ]]
 }
 
-@test "valet-site set-url writes a caller-chosen env var" {
+@test "valet-site records the served URL in the wtbs state file, never the project .env" {
     fake_valet
     export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
+    export WTBS_STATE_FILE="$TMP_TEST_DIR/main/.wtbs/worktrees/feature_x.yml"
     mkdir -p "$WTBS_WORKTREE_ROOT"
-    echo 'APP_URL=https://old.test' > "$WTBS_WORKTREE_ROOT/.env"
-    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" set-url APP_URL myapp-feature-x )
-    grep -qx "APP_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
-    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" set-url MY_SERVED_URL myapp-feature-x )
-    grep -qx "MY_SERVED_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
+    # APP_URL pointing at a static ngrok tunnel (webhooks) must be left alone.
+    echo 'APP_URL=https://ngrok-static.example' > "$WTBS_WORKTREE_ROOT/.env"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
+    grep -qx "valet_url: https://myapp-feature-x.test" "$WTBS_STATE_FILE"
+    grep -qx "APP_URL=https://ngrok-static.example" "$WTBS_WORKTREE_ROOT/.env"
+    ! grep -q 'VALET_URL' "$WTBS_WORKTREE_ROOT/.env"
+    # Re-secure updates the same key instead of duplicating it.
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
+    [[ "$(grep -c '^valet_url:' "$WTBS_STATE_FILE")" -eq 1 ]]
 }
 
 # ── ngrok strap guard ───────────────────────────────────────────────────────

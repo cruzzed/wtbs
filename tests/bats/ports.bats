@@ -128,3 +128,20 @@ teardown() {
 @test "state_delete is a no-op without a registry" {
     state_delete "/nonexistent/registry.tsv" "feature/test"
 }
+
+@test "load_state_into_ctx exposes state keys as state.* tokens" {
+    local f
+    f="$(mktemp)"
+    printf 'valet_url: https://short-name.develop\nother_key: value with spaces\n' > "$f"
+    local -A ctx=()
+    load_state_into_ctx "$f" ctx
+    [[ "${ctx[state.valet_url]}" == "https://short-name.develop" ]]
+    [[ "${ctx[state.other_key]}" == "value with spaces" ]]
+    load_state_into_ctx "/nonexistent.yml" ctx
+    [[ -z "${ctx[state.missing]:-}" ]]
+    rm -f "$f"
+}
+
+@test "state_file_path is branch-scoped under the wtbs state dir" {
+    [[ "$(state_file_path /main feature_x)" == "/main/.wtbs/worktrees/feature_x.yml" ]]
+}

@@ -288,6 +288,25 @@ EOF
     rm -rf "$WTBS_STRAPS_DIR"
 }
 
+@test "strap state file round-trips through hooks and exec templates" {
+    cat > .wtbs.yml <<'EOF'
+hooks:
+  create:
+    - 'mkdir -p "$(dirname "$WTBS_STATE_FILE")" && echo "probe: hello-{branch_slug}" >> "$WTBS_STATE_FILE"'
+aliases:
+  probetest: "echo state says {state.probe}"
+EOF
+    run "$SCRIPT" create feature/state
+    [ "$status" -eq 0 ]
+    grep -qx "probe: hello-feature_state" .wtbs/worktrees/feature_state.yml
+    run "$SCRIPT" exec feature/state probetest
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"state says hello-feature_state"* ]]
+    run "$SCRIPT" destroy feature/state
+    [ "$status" -eq 0 ]
+    [ ! -e .wtbs/worktrees/feature_state.yml ]
+}
+
 @test "create --dir uses a custom directory name" {
     run "$SCRIPT" create feature/custom --dir wt-customdir
     [ "$status" -eq 0 ]

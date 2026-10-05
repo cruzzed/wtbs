@@ -66,6 +66,30 @@ registry_path() {
     echo "$main_root/.wtbs/registry.tsv"
 }
 
+# Per-branch strap state lives in wtbs's own files, never in the project's:
+# <main-repo>/.wtbs/worktrees/<branch-slug>.yml. Straps write their
+# namespaced keys here (via $WTBS_STATE_FILE in the hook environment); the
+# core loads them into the template context as {state.<key>} so projects can
+# opt in to strap-provided values explicitly.
+state_file_path() {
+    local main_root="$1" branch_slug="$2"
+    echo "$main_root/.wtbs/worktrees/${branch_slug}.yml"
+}
+
+# Load a state file's flat `key: value` entries into the template context.
+load_state_into_ctx() {
+    local state_file="$1" ctx_name="$2"
+    [[ -f "$state_file" ]] || return 0
+    local -n lsc_ctx="$ctx_name"
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^([a-z0-9_]+):\ (.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+        lsc_ctx["state.$key"]="$value"
+    done < "$state_file"
+}
+
 # Echo a field ("offset" or "db") for a branch, empty when not registered.
 state_get() {
     local registry_file="$1" branch="$2" field="$3"

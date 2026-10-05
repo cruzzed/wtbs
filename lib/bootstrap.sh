@@ -84,9 +84,11 @@ export_context_vars() {
 # Run every hook for a lifecycle step ("create" or "destroy"), rendered with
 # the full template context plus {env.KEY} references. Hooks run with the
 # worktree as cwd, active strap dirs on PATH, the MAIN repo's .env exported
-# (the source of truth — e.g. DB credentials are the clone SOURCE), and the
-# context exported as WTBS_*. Values written into the worktree .env are
-# available via the template context ({ports.*}, {db_name}, ...).
+# (the source of truth — e.g. DB credentials are the clone SOURCE), the
+# context exported as WTBS_*, and WTBS_STATE_FILE pointing at this branch's
+# wtbs-owned state file for strap-written values. Values written into the
+# worktree .env are available via the template context ({ports.*}, {db_name},
+# ...).
 run_hooks() {
     local step="$1" ctx_name="$2"
     local -n hook_ctx="$ctx_name"
@@ -97,6 +99,8 @@ run_hooks() {
     local main_env="${hook_ctx[main_repo]}/.env"
     local strap_path
     strap_path="$(strap_path_prefix "${hook_ctx[worktree_root]}" "${hook_ctx[main_repo]}")"
+    local state_file
+    state_file="$(state_file_path "${hook_ctx[main_repo]}" "${hook_ctx[branch_slug]}")"
 
     local cmd rendered_cmd
     for cmd in "${cmds[@]}"; do
@@ -111,6 +115,7 @@ run_hooks() {
                 [[ -n "$strap_path" ]] && export PATH="$strap_path:$PATH"
                 export_env_file "$main_env"
                 export_context_vars "$ctx_name"
+                export WTBS_STATE_FILE="$state_file"
                 # WARNING: hooks come from the project config and active
                 # straps and are executed as-is. Only run this tool against
                 # repositories whose bootstrap config you trust.
@@ -208,6 +213,7 @@ cmd_bootstrap() {
     site="$(basename "$worktree_root" | tr '[:upper:]' '[:lower:]')"
     local -A ctx
     build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_root" "$main_root" ports
+    load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
 
     # Fail fast on missing hook scripts before changing anything. When the
     # worktree does not exist yet (create --dry-run), warn against the main
@@ -360,6 +366,7 @@ cmd_destroy() {
     site="$(basename "$worktree_path" | tr '[:upper:]' '[:lower:]')"
     local -A ctx
     build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root" ports
+    load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
 
     # Destroy hooks run before teardown. Hook failures abort teardown, so
     # best-effort commands should end with `|| true`.
@@ -374,6 +381,8 @@ cmd_destroy() {
     fi
 
     state_delete "$registry_file" "$branch"
+    rm -f "$(state_file_path "$main_root" "$branch_slug")"
+    rmdir "$main_root/.wtbs/worktrees" 2>/dev/null || true
     remove_worktree "$worktree_path"
     # Prune immediately so the branch is deletable right away.
     git -C "$main_root" worktree prune

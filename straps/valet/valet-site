@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# valet-site secure|unsecure|url|set-url <site> [VAR] — serve this worktree
-# under a valet site name that is SAFE for nginx, truncating only when
-# necessary.
+# valet-site secure|unsecure|url <site> — serve this worktree under a valet
+# site name that is SAFE for nginx, truncating only when necessary.
 #
 # valet writes <site>.<tld> plus www. and *. variants into nginx, whose
 # default server_names_hash_bucket_size is 64: an over-long literal server
@@ -14,13 +13,14 @@
 #   - secures/unsecures only the short name
 # Short names pass through untouched. The core never learns any of this.
 #
-# Framework-agnostic by contract: this script never touches framework keys
-# like APP_URL. It exposes the served URL (`url`) and a generic setter for a
-# caller-chosen env var (`set-url VAR <site>`) so project configs can wire
-# their own conventions.
+# The strap's state record — where valet serves THIS worktree — goes to
+# wtbs's own per-branch state file ($WTBS_STATE_FILE), never to the project's
+# .env: a bootstrap must leave no trace in project files. Projects that want
+# the value opt in via {state.valet_url} in their config; `valet-site url`
+# prints it for humans and scripts.
 set -euo pipefail
 
-cmd="${1:?usage: valet-site secure|unsecure|url|set-url <site> [VAR]}"
+cmd="${1:?usage: valet-site secure|unsecure|url <site>}"
 
 tld="test"
 config="${VALET_CONFIG:-$HOME/.config/valet/config.json}"
@@ -72,6 +72,14 @@ case "$cmd" in
                 ln -sfn "$worktree_root" "$parent/$resolved"
             fi
             command -v valet >/dev/null && valet secure "$resolved" || true
+            # Record the served URL in wtbs's per-branch state file.
+            if [[ -n "${WTBS_STATE_FILE:-}" ]]; then
+                mkdir -p "$(dirname "$WTBS_STATE_FILE")"
+                touch "$WTBS_STATE_FILE"
+                grep -vE '^valet_url:' "$WTBS_STATE_FILE" > "$WTBS_STATE_FILE.tmp" 2>/dev/null || true
+                echo "valet_url: $(served_url)" >> "$WTBS_STATE_FILE.tmp"
+                mv "$WTBS_STATE_FILE.tmp" "$WTBS_STATE_FILE"
+            fi
         else
             if command -v valet >/dev/null; then
                 valet unsecure "$resolved" || true
@@ -86,19 +94,8 @@ case "$cmd" in
         resolve "$site"
         served_url
         ;;
-    set-url)
-        var="${2:?usage: valet-site set-url VAR <site>}"
-        site="${3:?usage: valet-site set-url VAR <site>}"
-        resolve "$site"
-        [[ -f ./.env ]] || exit 0
-        if grep -q "^${var}=" ./.env; then
-            sed -i -E "s|^${var}=.*|${var}=$(served_url)|" ./.env
-        else
-            echo "${var}=$(served_url)" >> ./.env
-        fi
-        ;;
     *)
-        echo "usage: valet-site secure|unsecure|url|set-url <site> [VAR]" >&2
+        echo "usage: valet-site secure|unsecure|url <site>" >&2
         exit 2
         ;;
 esac

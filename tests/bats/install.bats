@@ -9,7 +9,7 @@ setup() {
     rm -rf "$SRC_COPY/.git" "$SRC_COPY/node_modules"
     chmod 755 "$SRC_COPY/wtbs.sh" "$SRC_COPY/install.sh"
     chmod 755 "$SRC_COPY"/straps/*/db-clone "$SRC_COPY"/straps/*/db-drop \
-        "$SRC_COPY"/straps/valet/valet-check-name \
+        "$SRC_COPY"/straps/valet/valet-site \
         "$SRC_COPY"/straps/ngrok/ngrok-share "$SRC_COPY"/straps/ngrok/ngrok-guard
     export HOME="$(mktemp -d)"
     mkdir -p "$HOME/.local/bin" "$HOME/.local/share"
@@ -49,7 +49,7 @@ teardown() {
     [ -x "$share/straps/mysql/db-clone" ]
     [ -x "$share/straps/postgres/db-drop" ]
     [ -x "$share/straps/sqlite/db-drop" ]
-    [ -x "$share/straps/valet/valet-check-name" ]
+    [ -x "$share/straps/valet/valet-site" ]
     [ -x "$share/straps/ngrok/ngrok-share" ]
     [ -x "$share/straps/ngrok/ngrok-guard" ]
 }

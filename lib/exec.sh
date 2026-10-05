@@ -128,6 +128,8 @@ cmd_exec() {
 
     local -A ctx
     build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root" ports
+    load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
+    export WTBS_STATE_FILE="$(state_file_path "$main_root" "$branch_slug")"
 
     # No command: list what's available for this worktree.
     if [[ $# -eq 0 ]]; then
