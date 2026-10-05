@@ -1,26 +1,9 @@
-# MySQL per-worktree database strap.
+# mysql strap — per-worktree MySQL database cloning.
 #
-# On create: clones the main repo's database into {db_name}.
-# On destroy: drops {db_name}.
+# Lifecycle: create clones the main repo's DB into {db_name} and rewrites
+# the worktree's DB_DATABASE; destroy drops it. Credentials are read from
+# the exported main-repo .env (DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD,
+# DB_DATABASE = clone source). Requires: mysql, mysqldump.
 #
-# Credentials come from the hook environment, which exports the main repo's
-# .env on a fresh create — so DB_DATABASE is the clone SOURCE:
-#   DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD, DB_DATABASE
-# The env: fragment below then rewrites the worktree's DB_DATABASE to the
-# clone target. FORWARD_DB_PORT is the Laravel Sail convention for reaching
-# MySQL from the host; drop it if your stack doesn't use it.
-#
-# Requires: mysql, mysqldump.
-
-ports:
-  db: 33060
-
-env:
-  DB_DATABASE: "{db_name}"
-  FORWARD_DB_PORT: "{ports.db}"
-
-hooks:
-  create:
-    - "db-clone {db_name}"
-  destroy:
-    - "db-drop {db_name} || true"
+# This file is documentation — the core never reads it. Private config goes
+# here when this strap is customized into a project.

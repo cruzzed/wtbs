@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Straps: named, opt-in bundles of policy. A strap is a directory containing
-# a strap.yml config fragment plus optional scripts. Activating a strap
-# merges its fragment into the project config (the project always wins) and
-# puts the strap's directory on PATH during hooks and exec.
+# Straps: self-contained bundles of policy (docs/adr/0002). A strap is a
+# directory of scripts plus its own private config (strap.yml, read by the
+# strap itself — the core never parses it). The complete core↔strap
+# interface:
+#
+#   1. Activation, with optional parameters:
+#        straps: [valet, "auto-ports(serve:8000;db:33060)"]
+#      The core parses the bare name for resolution/PATH/lifecycle and
+#      exports the args verbatim as WTBS_STRAP_ARGS_<NAME>. Arg semantics
+#      are the strap's private schema.
+#   2. Verbs: executable files in the strap dir, reachable through exec's
+#      raw-command tier (`wtbs <branch> share`).
+#   3. Lifecycle scripts: <strap>/create and <strap>/destroy, invoked with
+#      the hook environment; strap lifecycles run before the project's own
+#      hooks.* (strap-then-project ordering).
+#   4. Publish/consume: straps write namespaced keys to the per-branch
+#      state file; the core loads them as template tokens.
 #
 # Resolution is local-first: worktree .wtbs/straps/<name> shadows the main
 # repo's, which shadows the bundled straps/<name> shipped with the tool.
@@ -12,13 +25,38 @@ set -euo pipefail
 
 STRAPS_BUNDLED_DIR="${WTBS_STRAPS_DIR:-${LIB_DIR}/../straps}"
 
-# Keys a strap fragment may not define.
-_reject_strap_fragment_key() {
-    local key="$1" strap_name="$2"
-    case "$key" in
-        straps|straps\[*)
-            fatal "strap '$strap_name' may not declare straps itself (no nesting)" ;;
+# Split an activation ref into bare name + args: "auto-ports(a;b)" sets
+# REF_NAME=auto-ports, REF_ARGS="a;b". A plain name leaves REF_ARGS empty.
+parse_strap_ref() {
+    local ref="$1"
+    REF_NAME="$ref"
+    REF_ARGS=""
+    if [[ "$ref" == *"("* ]]; then
+        REF_NAME="${ref%%\(*}"
+        REF_ARGS="${ref#*\(}"
+        REF_ARGS="${REF_ARGS%\)*}"
+    fi
+    case "$REF_NAME" in
+        *..*|*/*|"") fatal "invalid strap name: '$ref'" ;;
     esac
+}
+
+# Export WTBS_STRAP_ARGS_<NAME> for every declared activation ref.
+export_strap_args() {
+    local ref name args env_name
+    for ref in "$@"; do
+        parse_strap_ref "$ref"
+        env_name="WTBS_STRAP_ARGS_$(echo "$REF_NAME" | tr '[:lower:]-' '[:upper:]_' | sed -E 's/[^A-Z0-9_]+/_/g')"
+        export "${env_name}=${REF_ARGS}"
+    done
+}
+
+# Export activation args for the straps declared in the currently loaded
+# config (used by exec, where config is loaded in-process).
+export_strap_args_env_for() {
+    local -a refs=()
+    declared_straps refs
+    export_strap_args ${refs[@]+"${refs[@]}"}
 }
 
 # Echo the resolved directory for a strap name, or nothing when not found.
@@ -37,116 +75,76 @@ resolve_strap() {
     fi
 }
 
-# List the strap names declared in the project config into the named array.
+# List the raw activation refs (names with optional args) from the config.
 declared_straps() {
     local -n out_ref="$1"
     config_list straps out_ref
 }
 
-# Merge every declared strap's strap.yml into CONFIG.
-#
-# Merge rule: scalar/map keys merge with the project config winning; between
-# straps, the later-declared strap wins. Lists (copy, hooks.create,
-# hooks.destroy) concatenate strap-then-project, in declared order.
-merge_straps() {
+# List resolved strap dirs for every declared ref (echoes "name<TAB>dir").
+resolved_straps() {
     local worktree_root="$1" main_root="$2"
-
-    local -a names=()
-    declared_straps names
-    [[ ${#names[@]} -gt 0 ]] || return 0
-
-    # Snapshot which keys the project itself defined; these are untouchable.
-    local -A project_keys=()
-    local k
-    for k in "${!CONFIG[@]}"; do
-        project_keys["$k"]=1
-    done
-
-    # Project list items are appended after all strap items.
-    local -a project_copy=() project_create=() project_destroy=()
-    config_list copy project_copy
-    config_list hooks.create project_create
-    config_list hooks.destroy project_destroy
-    local -a merged_copy=() merged_create=() merged_destroy=()
-
-    local name dir
-    for name in "${names[@]}"; do
+    local -a refs=()
+    declared_straps refs
+    local ref
+    for ref in ${refs[@]+"${refs[@]}"}; do
+        local name dir
+        parse_strap_ref "$ref"
+        name="$REF_NAME"
         dir="$(resolve_strap "$name" "$worktree_root" "$main_root")"
         [[ -n "$dir" ]] || fatal "strap not found: '$name' (looked in worktree/main .wtbs/straps/ and bundled straps/)"
-        [[ -f "$dir/strap.yml" ]] || fatal "strap '$name' has no strap.yml in $dir"
-
-        local -A frag=()
-        _yaml_to_assoc "$dir/strap.yml" frag
-
-        local key
-        for key in "${!frag[@]}"; do
-            _reject_strap_fragment_key "$key" "$name"
-            case "$key" in
-                copy\[*) ;;
-                hooks.create\[*) ;;
-                hooks.destroy\[*) ;;
-                *)
-                    # Scalar/map key: project wins; later strap beats earlier.
-                    if [[ -z "${project_keys[$key]:-}" ]]; then
-                        CONFIG["$key"]="${frag[$key]}"
-                    fi
-                    ;;
-            esac
-        done
-
-        # Re-collect the fragment's list items in index order.
-        local i val
-        i=0
-        while true; do
-            val="${frag["copy[${i}]"]:-}"
-            [[ -z "$val" ]] && break
-            merged_copy+=("$val")
-            i=$((i + 1))
-        done
-        i=0
-        while true; do
-            val="${frag["hooks.create[${i}]"]:-}"
-            [[ -z "$val" ]] && break
-            merged_create+=("$val")
-            i=$((i + 1))
-        done
-        i=0
-        while true; do
-            val="${frag["hooks.destroy[${i}]"]:-}"
-            [[ -z "$val" ]] && break
-            merged_destroy+=("$val")
-            i=$((i + 1))
-        done
+        printf '%s\t%s\n' "$name" "$dir"
     done
-
-    merged_copy+=(${project_copy[@]+"${project_copy[@]}"})
-    merged_create+=(${project_create[@]+"${project_create[@]}"})
-    merged_destroy+=(${project_destroy[@]+"${project_destroy[@]}"})
-
-    # Write merged lists back, replacing whatever was there.
-    local i
-    for k in "${!CONFIG[@]}"; do
-        case "$k" in
-            copy\[*|hooks.create\[*|hooks.destroy\[*) unset 'CONFIG[$k]' ;;
-        esac
-    done
-    for i in "${!merged_copy[@]}"; do CONFIG["copy[${i}]"]="${merged_copy[$i]}"; done
-    for i in "${!merged_create[@]}"; do CONFIG["hooks.create[${i}]"]="${merged_create[$i]}"; done
-    for i in "${!merged_destroy[@]}"; do CONFIG["hooks.destroy[${i}]"]="${merged_destroy[$i]}"; done
 }
 
 # Colon-joined directories of every active strap, for prepending to PATH.
 strap_path_prefix() {
     local worktree_root="$1" main_root="$2"
-    local -a names=()
-    declared_straps names
-    local prefix="" name dir
-    for name in ${names[@]+"${names[@]}"}; do
-        dir="$(resolve_strap "$name" "$worktree_root" "$main_root")"
+    local prefix="" entry name dir
+    while IFS=$'\t' read -r name dir; do
         [[ -n "$dir" ]] || continue
         prefix="${prefix:+$prefix:}$dir"
-    done
+    done < <(resolved_straps "$worktree_root" "$main_root")
     echo "$prefix"
+}
+
+# Run the lifecycle scripts (<strap>/create or <strap>/destroy) of every
+# active strap, in declared order, with the hook subshell environment.
+# Project hooks run after this (strap-then-project).
+run_strap_lifecycles() {
+    local step="$1" ctx_name="$2"
+    local -n sl_ctx="$ctx_name"
+
+    local main_env="${sl_ctx[main_repo]}/.env"
+    local strap_path
+    strap_path="$(strap_path_prefix "${sl_ctx[worktree_root]}" "${sl_ctx[main_repo]}")"
+    local state_file
+    state_file="$(state_file_path "${sl_ctx[main_repo]}" "${sl_ctx[branch_slug]}")"
+    local -a refs=()
+    declared_straps refs
+
+    local entry name dir ref
+    while IFS=$'\t' read -r name dir; do
+        local script="$dir/$step"
+        [[ -f "$script" ]] || continue
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "[dry-run] would run strap '$name' $step: $script"
+            continue
+        fi
+        info "running strap '$name' $step: $script"
+        (
+            cd "${sl_ctx[worktree_root]}"
+            [[ -n "$strap_path" ]] && export PATH="$strap_path:$PATH"
+            export_env_file "$main_env"
+            export_context_vars "$ctx_name"
+            export WTBS_STATE_FILE="$state_file"
+            export_user_settings
+            export_strap_args ${refs[@]+"${refs[@]}"}
+            # WARNING: strap lifecycle scripts are project files executed
+            # as-is. Only run them for repositories you trust.
+            bash "$script"
+        ) || fatal "strap '$name' $step failed: $script"
+    done < <(resolved_straps "${sl_ctx[worktree_root]}" "${sl_ctx[main_repo]}")
 }
 
 cmd_straps() {
@@ -159,17 +157,20 @@ cmd_straps() {
     load_project_config "$main_root" "$worktree_root"
 
     local -A active=()
-    local -a names=()
-    declared_straps names
-    local n
-    for n in ${names[@]+"${names[@]}"}; do active["$n"]=1; done
+    local -a refs=()
+    declared_straps refs
+    local r
+    for r in ${refs[@]+"${refs[@]}"}; do
+        parse_strap_ref "$r"
+        active["$REF_NAME"]="($REF_ARGS)"
+    done
 
     # First tier containing a strap wins resolution; later tiers are shadowed.
     local -A resolved_in=() shadowed_in=()
     local -a tiers=()
     [[ -n "$worktree_root" ]] && tiers+=("worktree:$worktree_root/.wtbs/straps")
     tiers+=("main repo:$main_root/.wtbs/straps" "bundled:$STRAPS_BUNDLED_DIR")
-    local tier label dir s
+    local tier label dir s n
     for tier in ${tiers[@]+"${tiers[@]}"}; do
         label="${tier%%:*}"
         dir="${tier#*:}"
@@ -200,7 +201,9 @@ cmd_straps() {
 }
 
 cmd_strap_customize() {
-    local name="$1"
+    local ref="$1"
+    parse_strap_ref "$ref"
+    local name="$REF_NAME"
     local main_root
     main_root="$(resolve_main_root "$MAIN_ROOT_OVERRIDE")"
     local src="$STRAPS_BUNDLED_DIR/$name"
@@ -210,7 +213,7 @@ cmd_strap_customize() {
     mkdir -p "$(dirname "$dest")"
     cp -R "$src" "$dest"
     info "copied bundled strap '$name' -> $dest"
-    info "this local copy now shadows the bundled one; edit strap.yml and scripts to taste"
+    info "this local copy now shadows the bundled one; edit scripts and strap.yml to taste"
 }
 
 cmd_strap_init() {
@@ -223,22 +226,29 @@ cmd_strap_init() {
     local dest="$main_root/.wtbs/straps/$name"
     [[ ! -e "$dest" ]] || fatal "already exists: $dest"
     mkdir -p "$dest"
-    cat > "$dest/strap.yml" <<'EOF'
-# A strap is a config fragment merged into .wtbs.yml (the
-# project config always wins) plus optional scripts in this directory, which
-# is prepended to PATH during hooks and exec.
-#
-# ports: {db: 33060}
-# env:
-#   DB_DATABASE: "{db_name}"
-# hooks:
-#   create:
-#     - "my-setup-script {db_name}"
-#   destroy:
-#     - "my-teardown-script {db_name} || true"
-# aliases:
-#   mycommand: "my-setup-script status"
+    cat > "$dest/create" <<'EOF'
+#!/usr/bin/env bash
+# Runs at the create lifecycle moment, before the project's hooks.create,
+# with the worktree as cwd and the context exported: WTBS_BRANCH,
+# WTBS_BRANCH_SLUG, WTBS_SITE, WTBS_DB_NAME, WTBS_WORKTREE_ROOT,
+# WTBS_MAIN_REPO, WTBS_STATE_FILE (per-branch state file — write
+# namespaced keys like "mystrap.mykey: value" for {mystrap.mykey} tokens),
+# plus any WTBS_STRAP_ARGS_<NAME> activation params and user settings.
+set -euo pipefail
 EOF
-    info "created $dest/strap.yml"
-    info "activate with: straps: [$name] in .wtbs.yml"
+    chmod +x "$dest/create"
+    cat > "$dest/destroy" <<'EOF'
+#!/usr/bin/env bash
+# Runs at the destroy lifecycle moment, before the project's hooks.destroy
+# and before the worktree is removed. Same environment as create.
+set -euo pipefail
+EOF
+    chmod +x "$dest/destroy"
+    cat > "$dest/strap.yml" <<'EOF'
+# Private strap config — read by the strap's own scripts (next to them via
+# BASH_SOURCE), never by the core. Holds project-level policy when this
+# strap is customized into a project; wins over user settings.
+EOF
+    info "created $dest/ (create, destroy, strap.yml)"
+    info "activate with: straps: [$name] in .wtbs.yml — add executable files for verbs"
 }

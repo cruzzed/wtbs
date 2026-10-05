@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# valet strap — create lifecycle: serve this worktree via valet.
+# See valet-site for the nginx-safe naming logic (short-name symlink when
+# the directory name is too long). Records the served URL as the state key
+# valet.url — the project's .env is never touched.
+set -euo pipefail
+
+: "${WTBS_SITE:?WTBS_SITE is not set — lifecycle scripts run inside wtbs}"
+
+"$(dirname "${BASH_SOURCE[0]}")/valet-site" secure "$WTBS_SITE"

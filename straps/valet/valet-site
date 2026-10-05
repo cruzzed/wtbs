@@ -76,8 +76,8 @@ case "$cmd" in
             if [[ -n "${WTBS_STATE_FILE:-}" ]]; then
                 mkdir -p "$(dirname "$WTBS_STATE_FILE")"
                 touch "$WTBS_STATE_FILE"
-                grep -vE '^valet_url:' "$WTBS_STATE_FILE" > "$WTBS_STATE_FILE.tmp" 2>/dev/null || true
-                echo "valet_url: $(served_url)" >> "$WTBS_STATE_FILE.tmp"
+                grep -vE '^valet\.url:' "$WTBS_STATE_FILE" > "$WTBS_STATE_FILE.tmp" 2>/dev/null || true
+                echo "valet.url: $(served_url)" >> "$WTBS_STATE_FILE.tmp"
                 mv "$WTBS_STATE_FILE.tmp" "$WTBS_STATE_FILE"
             fi
         else

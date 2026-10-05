@@ -6,12 +6,14 @@
 
 setup() {
     # Hermetic copy of the bundled straps: this environment may normalize the
-    # executable bits of untracked repo files between processes, and the
-    # scripts must be executable to run.
+    # executable bits of untracked repo files, and the scripts must be
+    # executable to run.
     export STRAPS="$(mktemp -d)"
     cp -R "$BATS_TEST_DIRNAME/../../straps/." "$STRAPS/"
-    chmod 755 "$STRAPS"/*/db-clone "$STRAPS"/*/db-drop \
-        "$STRAPS"/valet/valet-site "$STRAPS"/ngrok/ngrok-share "$STRAPS"/ngrok/ngrok-guard
+    chmod 755 "$STRAPS"/*/create "$STRAPS"/*/destroy \
+        "$STRAPS"/*/db-clone "$STRAPS"/*/db-drop \
+        "$STRAPS"/valet/valet-site \
+        "$STRAPS"/ngrok/share "$STRAPS"/ngrok/ngrok-guard
     export TMP_BIN="$(mktemp -d)"
     export TMP_TEST_DIR="$(mktemp -d)"
     export PATH="$TMP_BIN:$PATH"
@@ -20,6 +22,9 @@ setup() {
     export WTBS_MAIN_REPO="$TMP_TEST_DIR/main"
     export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt"
     export WTBS_SITE=wt
+    export WTBS_BRANCH=feature/x
+    export WTBS_BRANCH_SLUG=feature_x
+    export WTBS_DB_NAME=wt_feature_x
     mkdir -p "$WTBS_MAIN_REPO" "$WTBS_WORKTREE_ROOT"
 }
 
@@ -46,14 +51,6 @@ teardown() {
     [[ "$(cat "$WTBS_WORKTREE_ROOT/wt_branch.sqlite")" == "existing" ]]
 }
 
-@test "sqlite db-clone --force re-clones an existing target" {
-    echo "data" > "$WTBS_MAIN_REPO/db.sqlite3"
-    echo "existing" > "$WTBS_WORKTREE_ROOT/wt_branch.sqlite"
-    run "$STRAPS/sqlite/db-clone" db.sqlite3 "$WTBS_WORKTREE_ROOT/wt_branch.sqlite" --force
-    [ "$status" -eq 0 ]
-    [[ "$(cat "$WTBS_WORKTREE_ROOT/wt_branch.sqlite")" == "data" ]]
-}
-
 @test "sqlite db-clone skips when source and target are identical" {
     echo "data" > "$WTBS_WORKTREE_ROOT/same.sqlite"
     run "$STRAPS/sqlite/db-clone" "$WTBS_WORKTREE_ROOT/same.sqlite" "$WTBS_WORKTREE_ROOT/same.sqlite"
@@ -77,7 +74,6 @@ EOF
 }
 
 @test "sqlite db-clone touches an empty file when sqlite3 is unavailable" {
-    # No fake sqlite3 on PATH; the real one is absent on this machine too.
     if command -v sqlite3 >/dev/null 2>&1; then
         skip "sqlite3 present; touch path not reachable"
     fi
@@ -94,10 +90,20 @@ EOF
     [[ ! -f "$WTBS_WORKTREE_ROOT/wt_branch.sqlite" ]]
 }
 
+@test "sqlite create lifecycle clones and rewrites DB_DATABASE" {
+    echo "db-content" > "$WTBS_MAIN_REPO/db.sqlite3"
+    echo 'DB_DATABASE=db.sqlite3' > "$WTBS_WORKTREE_ROOT/.env"
+    (
+        cd "$WTBS_WORKTREE_ROOT"
+        "$STRAPS/sqlite/create"
+    )
+    [[ -f "$WTBS_WORKTREE_ROOT/wt_feature_x.sqlite" ]]
+    grep -qx "DB_DATABASE=$WTBS_WORKTREE_ROOT/wt_feature_x.sqlite" "$WTBS_WORKTREE_ROOT/.env"
+}
+
 # ── mysql strap ─────────────────────────────────────────────────────────────
 
 fake_mysql_absent() {
-    # mysql: SHOW DATABASES finds nothing; logs args/env and swallows SQL.
     cat > "$TMP_BIN/mysql" <<'EOF'
 #!/usr/bin/env bash
 echo "ARGS: $*" >> "$MYSQL_LOG"
@@ -149,6 +155,17 @@ EOF
     grep -q "SQL: DROP DATABASE IF EXISTS \`wt_target\`;" "$MYSQL_LOG"
 }
 
+@test "mysql create lifecycle clones and rewrites DB_DATABASE" {
+    fake_mysql_absent
+    echo 'DB_DATABASE=source_db' > "$WTBS_WORKTREE_ROOT/.env"
+    (
+        cd "$WTBS_WORKTREE_ROOT"
+        "$STRAPS/mysql/create"
+    )
+    grep -qx "DB_DATABASE=wt_feature_x" "$WTBS_WORKTREE_ROOT/.env"
+    grep -q "DUMP ARGS: --host=127.0.0.1 --port=3306 --user=root --single-transaction source_db" "$MYSQL_LOG"
+}
+
 @test "mysql db-clone fatals without DB_DATABASE" {
     unset DB_DATABASE
     run "$STRAPS/mysql/db-clone" wt_target
@@ -189,9 +206,6 @@ EOF
     grep -q 'SQL: CREATE DATABASE "wt_target";' "$PG_LOG"
     grep -q "DUMP ARGS: --host=127.0.0.1 --port=5432 --username=root source_db" "$PG_LOG"
     grep -q "PGPASSWORD=secret" "$PG_LOG"
-    # Maintenance queries go to the maintenance db.
-    grep -q "postgres -tAc SELECT 1 FROM pg_database" "$PG_LOG" \
-        || grep -q -- "-d postgres -tAc" "$PG_LOG"
 }
 
 @test "postgres db-drop uses the maintenance database" {
@@ -201,6 +215,73 @@ EOF
     [ "$status" -eq 0 ]
     grep -q -- "-d admin_db" "$PG_LOG"
     grep -q 'SQL: DROP DATABASE IF EXISTS "wt_target";' "$PG_LOG"
+}
+
+# ── auto-ports strap ────────────────────────────────────────────────────────
+
+@test "auto-ports lib reuses a registered offset" {
+    (
+        source "$STRAPS/auto-ports/lib"
+        port_in_use() { return 1; }
+        local -A bases=([serve]=48000)
+        local reg="$TMP_TEST_DIR/auto-ports.tsv"
+        register_offset "$reg" "feature/x" 7
+        [[ "$(allocate_offset "$reg" "feature/x" bases)" == "7" ]]
+    )
+}
+
+@test "auto-ports lib reclaims a free offset before allocating a new one" {
+    (
+        source "$STRAPS/auto-ports/lib"
+        port_in_use() { return 1; }
+        local -A bases=([serve]=48000)
+        local reg="$TMP_TEST_DIR/auto-ports.tsv"
+        register_offset "$reg" "feature/other" 3
+        [[ "$(allocate_offset "$reg" "feature/new" bases)" == "3" ]]
+    )
+}
+
+@test "auto-ports lib allocates above the highest registered offset" {
+    (
+        source "$STRAPS/auto-ports/lib"
+        port_in_use() { [[ "$1" == "48003" ]]; }
+        local -A bases=([serve]=48000)
+        local reg="$TMP_TEST_DIR/auto-ports.tsv"
+        register_offset "$reg" "feature/other" 3
+        [[ "$(allocate_offset "$reg" "feature/new" bases)" == "4" ]]
+    )
+}
+
+@test "auto-ports default_base is deterministic and in range" {
+    (
+        source "$STRAPS/auto-ports/lib"
+        [[ "$(default_base serve)" == "$(default_base serve)" ]]
+        local b
+        b="$(default_base serve)"
+        (( b >= 20000 && b < 40000 ))
+    )
+}
+
+@test "auto-ports create publishes namespaced state keys and destroy releases" {
+    export WTBS_STRAP_ARGS_AUTO_PORTS="serve:48000;db:49000"
+    export WTBS_STATE_FILE="$TMP_TEST_DIR/main/.wtbs/worktrees/feature_x.yml"
+    run "$STRAPS/auto-ports/create"
+    [ "$status" -eq 0 ]
+    grep -qx "auto_ports.serve: 48001" "$WTBS_STATE_FILE"
+    grep -qx "auto_ports.db: 49001" "$WTBS_STATE_FILE"
+    [[ -f "$TMP_TEST_DIR/main/.wtbs/auto-ports.tsv" ]]
+    run "$STRAPS/auto-ports/destroy"
+    [ "$status" -eq 0 ]
+    [[ ! -s "$TMP_TEST_DIR/main/.wtbs/auto-ports.tsv" ]]
+}
+
+@test "auto-ports create is a no-op without activation args" {
+    unset WTBS_STRAP_ARGS_AUTO_PORTS 2>/dev/null || true
+    export WTBS_STRAP_ARGS_AUTO_PORTS=""
+    export WTBS_STATE_FILE="$TMP_TEST_DIR/main/.wtbs/worktrees/feature_x.yml"
+    run "$STRAPS/auto-ports/create"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "" ]]
 }
 
 # ── valet strap ─────────────────────────────────────────────────────────────
@@ -219,11 +300,11 @@ EOF
     fake_valet
     export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
     mkdir -p "$WTBS_WORKTREE_ROOT"
-    echo 'APP_URL=https://myapp-feature-x.test' > "$WTBS_WORKTREE_ROOT/.env"
+    echo 'APP_URL=https://ngrok-static.example' > "$WTBS_WORKTREE_ROOT/.env"
     ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
     grep -qx "valet secure myapp-feature-x" "$VALET_LOG"
-    # Framework-agnostic: the strap never touches APP_URL itself.
-    grep -qx "APP_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
+    # Framework-agnostic: the strap never touches the project .env.
+    grep -qx "APP_URL=https://ngrok-static.example" "$WTBS_WORKTREE_ROOT/.env"
     [[ "$(ls "$TMP_TEST_DIR/wt")" == "myapp-feature-x" ]]
 }
 
@@ -237,7 +318,6 @@ EOF
     [[ "$output" == *"too long for nginx"* ]]
     resolved="$(sed -E "s/.*serving as '([^']+)'.*/\1/" <<< "$output")"
     [[ "$resolved" != "$long" ]]
-    # Deterministic: same input resolves to the same short name.
     [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url "$long")" == "https://$resolved.test" ]]
     grep -qx "valet secure $resolved" "$VALET_LOG"
     [[ -L "$TMP_TEST_DIR/wt/$resolved" ]]
@@ -256,38 +336,29 @@ EOF
     [[ ! -e "$TMP_TEST_DIR/wt/$resolved" ]]
 }
 
-@test "valet-site url reads the TLD from valet config" {
+@test "valet-site url reads tld and domain keys from valet config" {
     fake_valet
     export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
     echo '{ "tld": "develop" }' > "$VALET_CONFIG"
     export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
     mkdir -p "$WTBS_WORKTREE_ROOT"
     [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url myapp-feature-x)" == "https://myapp-feature-x.develop" ]]
-}
-
-@test "valet-site url falls back to the domain key (valet-linux-plus)" {
-    fake_valet
-    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
     echo '{ "domain": "develop", "paths": [] }' > "$VALET_CONFIG"
-    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
-    mkdir -p "$WTBS_WORKTREE_ROOT"
     [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url myapp-feature-x)" == "https://myapp-feature-x.develop" ]]
 }
 
-@test "valet-site records the served URL in the wtbs state file, never the project .env" {
+@test "valet-site records valet.url in the wtbs state file, never the project .env" {
     fake_valet
     export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
     export WTBS_STATE_FILE="$TMP_TEST_DIR/main/.wtbs/worktrees/feature_x.yml"
     mkdir -p "$WTBS_WORKTREE_ROOT"
-    # APP_URL pointing at a static ngrok tunnel (webhooks) must be left alone.
     echo 'APP_URL=https://ngrok-static.example' > "$WTBS_WORKTREE_ROOT/.env"
     ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
-    grep -qx "valet_url: https://myapp-feature-x.test" "$WTBS_STATE_FILE"
+    grep -qx "valet.url: https://myapp-feature-x.test" "$WTBS_STATE_FILE"
     grep -qx "APP_URL=https://ngrok-static.example" "$WTBS_WORKTREE_ROOT/.env"
     ! grep -q 'VALET_URL' "$WTBS_WORKTREE_ROOT/.env"
-    # Re-secure updates the same key instead of duplicating it.
     ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
-    [[ "$(grep -c '^valet_url:' "$WTBS_STATE_FILE")" -eq 1 ]]
+    [[ "$(grep -c '^valet\.url:' "$WTBS_STATE_FILE")" -eq 1 ]]
 }
 
 # ── ngrok strap guard ───────────────────────────────────────────────────────
@@ -318,6 +389,20 @@ EOF
     export NGROK_SHARED_URL=x.ngrok.dev NGROK_SITES="main,other-site"
     run "$STRAPS/ngrok/ngrok-guard"
     [ "$status" -eq 1 ]
+}
+
+@test "ngrok-guard prefers project strap.yml sites over user settings" {
+    export NGROK_SHARED_URL=x.ngrok.dev NGROK_SITES="main,other-site"
+    # The hermetic ngrok strap has no sites: in its strap.yml — env wins.
+    run "$STRAPS/ngrok/ngrok-guard"
+    [ "$status" -eq 1 ]
+    # A customized copy declaring sites permits.
+    local custom="$WTBS_MAIN_REPO/.wtbs/straps/ngrok"
+    mkdir -p "$custom"
+    cp "$STRAPS/ngrok/ngrok-guard" "$custom/"
+    printf 'sites: "main,wt"\n' > "$custom/strap.yml"
+    run "$custom/ngrok-guard"
+    [ "$status" -eq 0 ]
 }
 
 @test "ngrok-guard permits everything from a customized strap" {

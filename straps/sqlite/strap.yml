@@ -1,17 +1,6 @@
-# SQLite per-worktree database strap.
+# sqlite strap — per-worktree SQLite database copying.
 #
-# On create: copies the main repo's SQLite file (DB_DATABASE from the main
-# .env, relative paths resolved against the main repo) to
-# {db_name}.sqlite in the worktree, and rewrites the worktree's DB_DATABASE
-# to point at it. A missing source file yields an empty database, so fresh
-# projects work too.
-# On destroy: deletes the worktree's file.
-
-env:
-  DB_DATABASE: "{worktree_root}/{db_name}.sqlite"
-
-hooks:
-  create:
-    - 'db-clone "{env.DB_DATABASE}" "{worktree_root}/{db_name}.sqlite"'
-  destroy:
-    - 'db-drop "{worktree_root}/{db_name}.sqlite" || true'
+# Lifecycle: create copies the main repo's DB file (DB_DATABASE from the
+# exported main-repo .env, relative paths against the main repo) to
+# {db_name}.sqlite in the worktree and rewrites DB_DATABASE; destroy
+# deletes it. This file is documentation — the core never reads it.

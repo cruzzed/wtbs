@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# sqlite strap — create lifecycle: copy the main repo's SQLite file into
+# the worktree and point DB_DATABASE at it. A missing source file yields an
+# empty database, so fresh projects work too.
+set -euo pipefail
+
+: "${WTBS_DB_NAME:?WTBS_DB_NAME is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}"
+: "${WTBS_WORKTREE_ROOT:?WTBS_WORKTREE_ROOT is not set}"
+
+# The exported DB_DATABASE is the main repo's (the clone SOURCE); relative
+# paths resolve against the main repo.
+source_path="${DB_DATABASE:?DB_DATABASE is not set in the main repo .env}"
+case "$source_path" in
+    /*) source="$source_path" ;;
+    *)  source="$WTBS_MAIN_REPO/$source_path" ;;
+esac
+target="$WTBS_WORKTREE_ROOT/${WTBS_DB_NAME}.sqlite"
+
+"$(dirname "${BASH_SOURCE[0]}")/db-clone" "$source" "$target"
+
+if [[ -f ./.env ]]; then
+    if grep -q '^DB_DATABASE=' ./.env; then
+        sed -i -E "s|^DB_DATABASE=.*|DB_DATABASE=${target}|" ./.env
+    else
+        echo "DB_DATABASE=${target}" >> ./.env
+    fi
+fi

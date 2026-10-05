@@ -1,15 +1,17 @@
-# Django + uv. Only the serve port matters — declare exactly what you use.
-# With a cloud/branching database (Neon, Supabase, ...), the DB lifecycle is
-# a hook script that owns rewriting DATABASE_URL in the worktree .env — see
-# the README ("project straps") for the Neon-shaped variant.
+# Django + uv, served on a per-worktree port via the auto-ports strap.
+# The service set is declared at activation; the strap allocates one offset
+# per branch and publishes concrete ports as {auto_ports.<name>} tokens.
+
+straps: ["auto-ports(serve:8000)"]
 
 copy: [.env]
 
-ports:
-  serve: 8000
+# With a cloud/branching database (Neon, Supabase, ...), the DB lifecycle is
+# a hook script that owns rewriting DATABASE_URL in the worktree .env — or a
+# project strap under .wtbs/straps/ shared with the team.
 
 env:
-  SERVE_PORT: "{ports.serve}"
+  SERVE_PORT: "{auto_ports.serve}"
 
 hooks:
   create:
@@ -17,6 +19,6 @@ hooks:
     - uv run python manage.py migrate
 
 aliases:
-  serve: "uv run python manage.py runserver {ports.serve}"
+  serve: "uv run python manage.py runserver {auto_ports.serve}"
   test: "uv run pytest"
   shell: "uv run python manage.py shell"

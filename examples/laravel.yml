@@ -1,7 +1,8 @@
 # Laravel + MySQL + Valet, expressed as straps.
-# Sites are served by Valet (park the parent directory of your worktrees).
-# valet secure/unsecure restarts nginx internally, so the sudo password may
-# be prompted for during create/destroy.
+# Sites are served by Valet (park the parent directory of your worktrees)
+# at https://{site}.<valet-tld> — no app port is needed. valet secure/
+# unsecure restart nginx internally, so the sudo password may be prompted
+# for during create/destroy.
 
 straps: [valet, mysql]
 
@@ -9,26 +10,14 @@ copy: [.env]
 
 db_name: "myapp_{branch_slug}"
 
-env:
-  APP_PORT: "{ports.app}"
-  VITE_PORT: "{ports.vite}"
-
-ports:
-  app: 8080
-  vite: 5173
-
 hooks:
   create:
-    # APP_URL is set by the valet strap from the actual valet domain (and the
-    # shortened site name when nginx requires it) -- set it before anything
-    # that might read it.
-    - "valet-site set-url APP_URL {site}"
     - composer install
     - npm ci
     - npm run build
 
 aliases:
-  serve: "php artisan serve --port {ports.app}"
+  serve: "php artisan serve"
   tinker: "php artisan tinker"
   migrate: "php artisan migrate"
   test: "php artisan test"

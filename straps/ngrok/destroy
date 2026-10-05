@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# ngrok strap — destroy lifecycle: hand the shared tunnel back (best-effort).
+set -euo pipefail
+
+"$(dirname "${BASH_SOURCE[0]}")/share" --handback || true

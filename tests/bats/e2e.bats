@@ -40,7 +40,6 @@ teardown() {
 @test "create with no config bootstraps just the worktree" {
     run "$SCRIPT" create feature/plain
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ports ............... <none declared>"* ]]
     [[ "$output" == *"straps .............. <none>"* ]]
 }
 
@@ -53,29 +52,20 @@ teardown() {
     [[ "$output" == *"wtbs preflight"* ]]
 }
 
-@test "bootstrap applies env entries with branch, slug, site and port templates" {
+@test "bootstrap applies env entries with branch, slug, site and db templates" {
     echo 'APP_URL=https://main.test' > .env
     cat > .wtbs.yml <<'EOF'
 copy: [.env]
 db_name: "myapp_{branch_slug}"
-ports:
-  app: 8080
-  serve: 8000
 env:
-  APP_PORT: "{ports.app}"
   APP_URL: "https://{site}.test"
-  SERVE_PORT: "{ports.serve}"
   DB_DATABASE: "{db_name}"
   BRANCH_COPY: "{branch}"
 EOF
     run "$SCRIPT" create feature/templates
     [ "$status" -eq 0 ]
-    local wt offset
+    local wt
     wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
-    # The offset depends on which ports are actually free on this machine.
-    offset="$(cut -f2 .wtbs/registry.tsv | head -n1)"
-    grep -qx "APP_PORT=$((8080 + offset))" "$wt/.env"
-    grep -qx "SERVE_PORT=$((8000 + offset))" "$wt/.env"
     grep -q "^APP_URL=https://.*\.test$" "$wt/.env"
     grep -qx "DB_DATABASE=myapp_feature_templates" "$wt/.env"
     grep -qx "BRANCH_COPY=feature/templates" "$wt/.env"
@@ -161,10 +151,8 @@ EOF
     echo 'DB_DATABASE=main' > .env
     cat > .wtbs.yml <<'EOF'
 copy: [.env]
-ports:
-  app: 8080
 env:
-  APP_PORT: "{ports.app}"
+  DB_DATABASE: "{db_name}"
 hooks:
   create:
     - "echo setup {branch_slug}"
@@ -174,11 +162,9 @@ EOF
     run "$SCRIPT" create feature/plan --dry-run
     [ "$status" -eq 0 ]
     [[ "$output" == *"would copy config files: .env"* ]]
-    # The offset depends on which ports are actually free on this machine.
-    [[ "$output" =~ env:\ APP_PORT=808[0-9] ]]
+    [[ "$output" == *"env: DB_DATABASE=wt_feature_plan"* ]]
     [[ "$output" == *"would run: echo setup feature_plan"* ]]
     [[ "$output" == *"would run: echo teardown"* ]]
-    [[ "$output" == *"ports.app"* ]]
 }
 
 @test "create registers branch state in the registry" {
@@ -221,13 +207,57 @@ EOF
     ! git show-ref --verify --quiet "refs/heads/feature/delbr"
 }
 
-@test "destroy removes the registry row" {
+@test "destroy removes the registry row and the strap state file" {
+    cat > .wtbs.yml <<'EOF'
+hooks:
+  create:
+    - 'mkdir -p "$(dirname "$WTBS_STATE_FILE")" && echo "probe: hello-{branch_slug}" >> "$WTBS_STATE_FILE"'
+EOF
     run "$SCRIPT" create feature/regrow
     [ "$status" -eq 0 ]
     grep -q "^feature/regrow" .wtbs/registry.tsv
+    [[ -f .wtbs/worktrees/feature_regrow.yml ]]
     run "$SCRIPT" destroy feature/regrow
     [ "$status" -eq 0 ]
     ! grep -q "^feature/regrow" .wtbs/registry.tsv
+    [[ ! -e .wtbs/worktrees/feature_regrow.yml ]]
+}
+
+@test "strap state round-trips through hooks and exec templates" {
+    cat > .wtbs.yml <<'EOF'
+hooks:
+  create:
+    - 'mkdir -p "$(dirname "$WTBS_STATE_FILE")" && echo "probe: hello-{branch_slug}" >> "$WTBS_STATE_FILE"'
+aliases:
+  probetest: "echo state says {probe}"
+EOF
+    run "$SCRIPT" create feature/state
+    [ "$status" -eq 0 ]
+    grep -qx "probe: hello-feature_state" .wtbs/worktrees/feature_state.yml
+    run "$SCRIPT" exec feature/state probetest
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"state says hello-feature_state"* ]]
+    run "$SCRIPT" destroy feature/state
+    [ "$status" -eq 0 ]
+    [ ! -e .wtbs/worktrees/feature_state.yml ]
+}
+
+@test "auto-ports strap publishes ports that env renders on first create" {
+    # docs/adr/0003: straps compute before env rendering — no prepare phase.
+    cat > .wtbs.yml <<'EOF'
+straps: ["auto-ports(serve:48000)"]
+env:
+  SERVE_PORT: "{auto_ports.serve}"
+EOF
+    run "$SCRIPT" create feature/ports
+    [ "$status" -eq 0 ]
+    local wt
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    grep -qE "^SERVE_PORT=480[0-9]+$" "$wt/.env"
+    [[ -f .wtbs/auto-ports.tsv ]]
+    run "$SCRIPT" destroy feature/ports
+    [ "$status" -eq 0 ]
+    ! grep -q "^feature/ports" .wtbs/auto-ports.tsv
 }
 
 @test "v0.3 config keys are rejected with a migration pointer" {
@@ -251,7 +281,8 @@ EOF
     # untracked repo files; bundled-resolution itself is covered in straps.bats.
     mkdir -p .wtbs/straps
     cp -R "$BATS_TEST_DIRNAME/../../straps/sqlite" .wtbs/straps/sqlite
-    chmod 755 .wtbs/straps/sqlite/db-clone .wtbs/straps/sqlite/db-drop
+    chmod 755 .wtbs/straps/sqlite/db-clone .wtbs/straps/sqlite/db-drop \
+        .wtbs/straps/sqlite/create .wtbs/straps/sqlite/destroy
     git add -A && git commit -q -m "add env, db and strap"
     cat > .wtbs.yml <<'EOF'
 straps: [sqlite]
@@ -277,7 +308,7 @@ EOF
     export WTBS_STRAPS_DIR="$(mktemp -d)"
     mkdir -p "$WTBS_STRAPS_DIR/ngrok"
     cp "$BATS_TEST_DIRNAME/../../straps/ngrok/"* "$WTBS_STRAPS_DIR/ngrok/"
-    chmod 755 "$WTBS_STRAPS_DIR/ngrok/ngrok-share" "$WTBS_STRAPS_DIR/ngrok/ngrok-guard"
+    chmod 755 "$WTBS_STRAPS_DIR/ngrok/share" "$WTBS_STRAPS_DIR/ngrok/ngrok-guard"
     cat > .wtbs.yml <<'EOF'
 straps: [ngrok]
 copy: [.env]
@@ -288,25 +319,6 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *"refusing to hand https://test-reserved.ngrok.dev"* ]]
     rm -rf "$WTBS_STRAPS_DIR"
-}
-
-@test "strap state file round-trips through hooks and exec templates" {
-    cat > .wtbs.yml <<'EOF'
-hooks:
-  create:
-    - 'mkdir -p "$(dirname "$WTBS_STATE_FILE")" && echo "probe: hello-{branch_slug}" >> "$WTBS_STATE_FILE"'
-aliases:
-  probetest: "echo state says {state.probe}"
-EOF
-    run "$SCRIPT" create feature/state
-    [ "$status" -eq 0 ]
-    grep -qx "probe: hello-feature_state" .wtbs/worktrees/feature_state.yml
-    run "$SCRIPT" exec feature/state probetest
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"state says hello-feature_state"* ]]
-    run "$SCRIPT" destroy feature/state
-    [ "$status" -eq 0 ]
-    [ ! -e .wtbs/worktrees/feature_state.yml ]
 }
 
 @test "create --dir uses a custom directory name" {

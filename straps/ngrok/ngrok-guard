@@ -32,7 +32,10 @@ if [[ "${WTBS_WORKTREE_ROOT:-}" != "${WTBS_MAIN_REPO:-}" ]]; then
     current_site="${WTBS_SITE:?WTBS_SITE is not set}"
 fi
 
-sites="${NGROK_SITES:-main}"
+# Project-level policy (a customized strap.yml next to this script) wins
+# over the user settings env (NGROK_SITES from ~/.config/wtbs/settings.yml).
+policy_sites="$(grep -E '^sites:' "$(dirname "${BASH_SOURCE[0]}")/strap.yml" 2>/dev/null | head -n1 | sed -E 's/^sites:[[:space:]]*//' | xargs || true)"
+sites="${policy_sites:-${NGROK_SITES:-main}}"
 sites="${sites//,/ }"
 for s in $sites; do
     [[ "$s" == "$current_site" ]] && exit 0

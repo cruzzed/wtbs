@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# auto-ports create lifecycle: allocate one offset for this branch and
+# publish the concrete ports as state keys (auto_ports.<name>), which the
+# project config consumes as {auto_ports.<name>} and scripts as
+# WTBS_AUTO_PORTS_<NAME>.
+#
+# Activation declares the service set (docs/adr/0003):
+#   straps: ["auto-ports(serve:8000;db:33060)"]
+# each arg is name[:base]; a name without a base gets a deterministic
+# hash-derived default (see `default_base` in lib).
+set -euo pipefail
+
+args="${WTBS_STRAP_ARGS_AUTO_PORTS:-}"
+[[ -z "$args" ]] && exit 0
+
+: "${WTBS_BRANCH:?WTBS_BRANCH is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}"
+: "${WTBS_STATE_FILE:?WTBS_STATE_FILE is not set}"
+
+strap_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib
+source "$strap_dir/lib"
+
+declare -A bases=()
+arg=""
+# args are ; -separated
+while IFS= read -r arg || [[ -n "$arg" ]]; do
+    [[ -z "$arg" ]] && continue
+    name="${arg%%:*}"
+    if [[ "$arg" == *:* ]]; then
+        base="${arg#*:}"
+    else
+        base="$(default_base "$name")"
+    fi
+    [[ "$name" =~ ^[a-z0-9_-]+$ ]] || { echo "auto-ports: invalid port name '$name'" >&2; exit 1; }
+    [[ "$base" =~ ^[0-9]+$ ]] || { echo "auto-ports: invalid base '$base' for '$name'" >&2; exit 1; }
+    bases["$name"]="$base"
+done < <(printf '%s' "$args" | tr ';' '\n')
+
+registry="$(auto_ports_registry "$WTBS_MAIN_REPO")"
+offset="$(allocate_offset "$registry" "$WTBS_BRANCH" bases)"
+register_offset "$registry" "$WTBS_BRANCH" "$offset"
+
+mkdir -p "$(dirname "$WTBS_STATE_FILE")"
+touch "$WTBS_STATE_FILE"
+tmp="$WTBS_STATE_FILE.tmp"
+grep -vE '^auto_ports\.' "$WTBS_STATE_FILE" > "$tmp" 2>/dev/null || true
+name=""
+for name in $(printf '%s\n' "${!bases[@]}" | sort); do
+    echo "auto_ports.${name}: $(( bases[$name] + offset ))" >> "$tmp"
+done
+mv "$tmp" "$WTBS_STATE_FILE"
+
+echo "auto-ports: allocated offset $offset for $WTBS_BRANCH (${!bases[*]})"

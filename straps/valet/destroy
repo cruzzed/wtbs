@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# valet strap — destroy lifecycle: stop serving this worktree.
+set -euo pipefail
+
+: "${WTBS_SITE:?WTBS_SITE is not set — lifecycle scripts run inside wtbs}"
+
+"$(dirname "${BASH_SOURCE[0]}")/valet-site" unsecure "$WTBS_SITE" || true

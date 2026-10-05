@@ -39,17 +39,18 @@ load_project_config() {
     local config_path="${CONFIG_PATH_OVERRIDE:-$main_root/.wtbs.yml}"
     load_config "$config_path"
     reject_legacy_keys
-    merge_straps "$worktree_root" "$main_root"
     apply_defaults
+    # Straps are NOT merged into this config (docs/adr/0002): activation
+    # refs are read separately via declared_straps.
 }
 
-# Build the template context associative array. Keys: branch, branch_slug,
-# site, db_name, worktree_root, main_repo, and ports.<name>.
+# Build the template context associative array. Core tokens: branch,
+# branch_slug, site, db_name, worktree_root, main_repo. Strap-published
+# tokens are loaded on top by load_state_into_ctx.
 build_context() {
     local -n ctx_out="$1"
     local branch="$2" branch_slug="$3" site="$4" db_name="$5"
     local worktree_root="$6" main_root="$7"
-    local -n ctx_ports="$8"
 
     ctx_out[branch]="$branch"
     ctx_out[branch_slug]="$branch_slug"
@@ -57,38 +58,28 @@ build_context() {
     ctx_out[db_name]="$db_name"
     ctx_out[worktree_root]="$worktree_root"
     ctx_out[main_repo]="$main_root"
-    local k
-    for k in "${!ctx_ports[@]}"; do
-        ctx_out["ports.$k"]="${ctx_ports[$k]}"
-    done
 }
 
-# Export the template context as WTBS_* env vars (used by hooks, exec
-# presets, and anything a strap script needs without template rendering).
+# Export the template context as WTBS_* env vars: every context key becomes
+# WTBS_<KEY uppercased, non-alphanumerics -> _> (state tokens like
+# auto_ports.serve become WTBS_AUTO_PORTS_SERVE). Used by hooks, exec
+# presets, and strap scripts.
 export_context_vars() {
     local -n ctx_ref="$1"
-    export WTBS_BRANCH="${ctx_ref[branch]}"
-    export WTBS_BRANCH_SLUG="${ctx_ref[branch_slug]}"
-    export WTBS_SITE="${ctx_ref[site]}"
-    export WTBS_DB_NAME="${ctx_ref[db_name]}"
-    export WTBS_WORKTREE_ROOT="${ctx_ref[worktree_root]}"
-    export WTBS_MAIN_REPO="${ctx_ref[main_repo]}"
     local key pname
     for key in "${!ctx_ref[@]}"; do
-        [[ "$key" == ports.* ]] || continue
-        pname="WTBS_PORT_${key#ports.}"
-        export "${pname^^}=${ctx_ref[$key]}"
+        pname="WTBS_$(echo "$key" | tr '[:lower:]' '[:upper:]' | sed -E 's/[^A-Z0-9]+/_/g')"
+        export "${pname}=${ctx_ref[$key]}"
     done
 }
 
-# Run every hook for a lifecycle step ("create" or "destroy"), rendered with
-# the full template context plus {env.KEY} references. Hooks run with the
-# worktree as cwd, active strap dirs on PATH, the MAIN repo's .env exported
-# (the source of truth — e.g. DB credentials are the clone SOURCE), the
-# context exported as WTBS_*, and WTBS_STATE_FILE pointing at this branch's
-# wtbs-owned state file for strap-written values. Values written into the
-# worktree .env are available via the template context ({ports.*}, {db_name},
-# ...).
+# Run the project's own hooks for a lifecycle step ("create" or "destroy"),
+# rendered with the full template context plus {env.KEY} references. Strap
+# lifecycle scripts have already run (run_strap_lifecycles). Hooks run with
+# the worktree as cwd, active strap dirs on PATH, the MAIN repo's .env
+# exported (the source of truth — e.g. DB credentials are the clone SOURCE),
+# the context exported as WTBS_*, and WTBS_STATE_FILE pointing at this
+# branch's wtbs-owned state file.
 run_hooks() {
     local step="$1" ctx_name="$2"
     local -n hook_ctx="$ctx_name"
@@ -101,6 +92,8 @@ run_hooks() {
     strap_path="$(strap_path_prefix "${hook_ctx[worktree_root]}" "${hook_ctx[main_repo]}")"
     local state_file
     state_file="$(state_file_path "${hook_ctx[main_repo]}" "${hook_ctx[branch_slug]}")"
+    local -a refs=()
+    declared_straps refs
 
     local cmd rendered_cmd
     for cmd in "${cmds[@]}"; do
@@ -117,9 +110,10 @@ run_hooks() {
                 export_context_vars "$ctx_name"
                 export WTBS_STATE_FILE="$state_file"
                 export_user_settings
-                # WARNING: hooks come from the project config and active
-                # straps and are executed as-is. Only run this tool against
-                # repositories whose bootstrap config you trust.
+                export_strap_args ${refs[@]+"${refs[@]}"}
+                # WARNING: hooks come from the project config and are
+                # executed as-is. Only run this tool against repositories
+                # whose bootstrap config you trust.
                 eval "$rendered_cmd"
             ) || fatal "command failed: $rendered_cmd"
         fi
@@ -183,9 +177,9 @@ cmd_bootstrap() {
 
     env_file="$worktree_root/.env"
     # On a fresh create (and in dry-run) the worktree .env does not exist yet
-    # — copy seeds it later in the run. Resolve {env.KEY} references and hook
-    # environments against the main repo's .env in that case, which is what
-    # copy would seed the worktree with.
+    # — copy seeds it later in the run. Resolve {env.KEY} references against
+    # the main repo's .env in that case, which is what copy would seed the
+    # worktree with.
     local env_refs_file="$env_file"
     if [[ ! -f "$env_file" ]]; then
         env_refs_file="$main_root/.env"
@@ -199,21 +193,13 @@ cmd_bootstrap() {
     echo "  branch   : $branch"
     echo "  db name  : $db_name"
 
-    # Ports: allocate one offset for the declared set, if any.
-    local -A base_ports ports
-    collect_base_ports base_ports
-    local registry_file offset=0
-    registry_file="$(registry_path "$main_root")"
-    if [[ ${#base_ports[@]} -gt 0 ]]; then
-        offset="$(allocate_offset "$registry_file" "$branch" base_ports "$DRY_RUN")"
-    fi
-    compute_ports "$offset" base_ports ports
-
-    # Template context for hooks and env.
+    # Template context: core tokens + strap-published tokens from previous
+    # runs. Strap create lifecycles (below) write fresh state before the
+    # project's env entries render, so strap tokens resolve on first create.
     local site
     site="$(basename "$worktree_root" | tr '[:upper:]' '[:lower:]')"
     local -A ctx
-    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_root" "$main_root" ports
+    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_root" "$main_root"
     load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
 
     # Fail fast on missing hook scripts before changing anything. When the
@@ -235,10 +221,15 @@ cmd_bootstrap() {
         echo "[dry-run] would copy config files: ${files[*]:-<none>}"
     fi
 
+    # Straps compute first (docs/adr/0003): allocate, clone, secure; write
+    # their namespaced state keys. Then the project's env entries render
+    # with the full context.
+    run_strap_lifecycles create ctx
+    load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
+
     # Apply every env entry from the config, rendered through the full
     # template context plus {env.KEY} references to existing values. The core
-    # writes nothing on its own — DB names, URLs, and ports are all policy
-    # declared by the project or its straps.
+    # writes nothing on its own — every key is one the project declared.
     local -A env_entries=()
     local cfg_key env_key
     for cfg_key in "${!CONFIG[@]}"; do
@@ -263,16 +254,18 @@ cmd_bootstrap() {
     fi
 
     # Register branch state (single source of truth for destroy/exec).
-    state_put "$registry_file" "$branch" "$offset" "$db_name" "$DRY_RUN"
+    local registry_file
+    registry_file="$(registry_path "$main_root")"
+    state_put "$registry_file" "$branch" "$db_name" "$DRY_RUN"
 
-    # Lifecycle hooks.
+    # Project lifecycle hooks (strap lifecycles already ran above).
     run_hooks create ctx
     if [[ $DRY_RUN -eq 1 ]]; then
+        run_strap_lifecycles destroy ctx
         run_hooks destroy ctx
     fi
 
-    # Report: reflect what actually happened; only the ports the project
-    # actually declared exist as far as the core is concerned.
+    # Report: reflect what actually happened.
     local -a straps=()
     declared_straps straps
 
@@ -281,14 +274,6 @@ cmd_bootstrap() {
     echo "  branch .............. $branch"
     echo "  db name ............. $db_name"
     echo "  straps .............. ${straps[*]:-<none>}"
-    if [[ ${#ports[@]} -gt 0 ]]; then
-        local pkey
-        while IFS= read -r pkey; do
-            printf '  %s %s\n' "$(printf '%-20s' "ports.$pkey" | tr ' ' '.')" "${ports[$pkey]}"
-        done < <(printf '%s\n' "${!ports[@]}" | sort)
-    else
-        echo "  ports ............... <none declared>"
-    fi
     echo "──────────────────────────────────────────────────────────"
 }
 
@@ -308,6 +293,7 @@ cmd_create() {
     # Validate the config (legacy keys, unknown straps) before creating
     # anything; cmd_bootstrap loads it again for the real run.
     load_project_config "$main_root" "$worktree_path"
+    resolved_straps "$worktree_path" "$main_root" >/dev/null
 
     if [[ $DRY_RUN -eq 1 ]]; then
         echo "[dry-run] would create worktree $worktree_path for branch $branch"
@@ -331,7 +317,7 @@ cmd_create() {
 
 cmd_destroy() {
     local target="$1"
-    local main_root worktree_path branch branch_slug offset db_name
+    local main_root worktree_path branch branch_slug db_name
     main_root="$(resolve_main_root "$MAIN_ROOT_OVERRIDE")"
 
     # Resolve path from branch name if needed. The registered-worktree lookup
@@ -355,22 +341,19 @@ cmd_destroy() {
     # computed fallback for worktrees that were never bootstrapped.
     local registry_file
     registry_file="$(registry_path "$main_root")"
-    offset="$(state_get "$registry_file" "$branch" offset)"
     db_name="$(state_get "$registry_file" "$branch" db)"
     [[ -z "$db_name" ]] && db_name="$(compute_db_name "$branch" "$branch_slug")"
-
-    local -A base_ports ports
-    collect_base_ports base_ports
-    compute_ports "${offset:-0}" base_ports ports
 
     local site
     site="$(basename "$worktree_path" | tr '[:upper:]' '[:lower:]')"
     local -A ctx
-    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root" ports
+    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root"
     load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
 
-    # Destroy hooks run before teardown. Hook failures abort teardown, so
-    # best-effort commands should end with `|| true`.
+    # Strap destroy lifecycles, then project destroy hooks — both before
+    # teardown. Failures abort teardown, so best-effort commands should end
+    # with `|| true`.
+    run_strap_lifecycles destroy ctx
     run_hooks destroy ctx
 
     if [[ $DRY_RUN -eq 1 ]]; then
