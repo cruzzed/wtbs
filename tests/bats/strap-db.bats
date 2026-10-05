@@ -161,6 +161,7 @@ EOF
 fake_pg_absent() {
     cat > "$TMP_BIN/psql" <<'EOF'
 #!/usr/bin/env bash
+cat >/dev/null   # consume stdin so upstream pg_dump never gets SIGPIPE
 echo "ARGS: $*" >> "$PG_LOG"
 echo "PGPASSWORD=$PGPASSWORD" >> "$PG_LOG"
 sql=""
