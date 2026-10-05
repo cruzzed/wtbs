@@ -3,7 +3,7 @@
 # The strap's only verb is the handoff — whichever checkout runs
 #   wtbs <branch> share
 # last owns the URL. State lives in the running ngrok process, never in the
-# tool. See README.md for the contract (env vars, strategies, handback).
+# tool. See README.md for the contract (user settings, strategies, handback).
 
 aliases:
   share: "ngrok-share"

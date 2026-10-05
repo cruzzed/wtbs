@@ -155,6 +155,7 @@ cmd_exec() {
             _exec_path "$worktree_path" "$main_root"
             export_env_file "$env_file"
             export_context_vars ctx
+            export_user_settings
             # WARNING: presets are project files executed as-is. Only run this
             # against repositories whose .wtbs/ scripts you trust.
             # Worktree checkouts may carry CRLF line endings (core.autocrlf),
@@ -190,6 +191,7 @@ cmd_exec() {
         _exec_path "$worktree_path" "$main_root"
         export_env_file "$env_file"
         export_context_vars ctx
+        export_user_settings
         # WARNING: alias text comes from the project config and is executed
         # as-is. Only run this against repositories whose config you trust.
         bash -c "$cmd"

@@ -3,6 +3,8 @@
 setup() {
     export TMP_ORIGIN="$(mktemp -d)"
     export SCRIPT="$BATS_TEST_DIRNAME/../../wtbs.sh"
+    # Hermetic: no user settings (~/.config/wtbs/settings.yml) during tests.
+    export WTBS_SETTINGS_FILE="/nonexistent/wtbs-settings.yml"
     cd "$TMP_ORIGIN"
     git init -q
     git config user.email "test@example.com"

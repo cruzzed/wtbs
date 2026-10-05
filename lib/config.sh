@@ -143,3 +143,25 @@ compute_db_name() {
     local -A mini=([branch]="$branch" [branch_slug]="$branch_slug")
     render_template "$(get_config db_name)" mini
 }
+
+# ── User settings ───────────────────────────────────────────────────────────
+# Per-user strap settings live in wtbs's own space (~/.config/wtbs/
+# settings.yml), never in project files: a project must not carry one user's
+# reserved domains or keys. Each `namespace: key: value` becomes a
+# namespaced env var (ngrok.shared_url -> NGROK_SHARED_URL), exported into
+# hook and exec environments AFTER any .env export, so settings win. Straps
+# keep reading their plain variable names — only the source changes.
+export_user_settings() {
+    local settings_file="${WTBS_SETTINGS_FILE:-$HOME/.config/wtbs/settings.yml}"
+    [[ -f "$settings_file" ]] || return 0
+
+    local -A settings=()
+    _yaml_to_assoc "$settings_file" settings
+
+    local k env_name
+    for k in "${!settings[@]}"; do
+        env_name="$(echo "${k//./_}" | tr '[:lower:]' '[:upper:]')"
+        [[ "$env_name" =~ ^[A-Z0-9_]+$ ]] || continue
+        export "${env_name}=${settings[$k]}"
+    done
+}

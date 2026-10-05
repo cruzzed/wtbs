@@ -7,13 +7,19 @@ provision anything — it provides a **handoff verb**. Whichever checkout runs
 
 ## Setup
 
-In the main repo's `.env` (which `copy: [.env]` seeds into worktrees):
+Settings live in wtbs's per-user settings file — a project must never carry
+one user's reserved domain:
 
-```dotenv
-NGROK_SHARED_URL=your-reserved.ngrok.dev
-# optional, port-swap strategy only:
-NGROK_SHARE_PORT=8787
+```yaml
+# ~/.config/wtbs/settings.yml
+ngrok:
+  shared_url: your-reserved.ngrok.dev
+  # optional, port-swap strategy only:
+  share_port: 8787
 ```
+
+The core exports these as `NGROK_SHARED_URL` / `NGROK_SHARE_PORT` into hook
+and exec environments; the strap scripts read them by those names.
 
 Activate the strap in `.wtbs.yml`:
 
@@ -71,20 +77,21 @@ ngrok-share: refusing to hand https://your-reserved.ngrok.dev to 'myapp-feat-x'
 
 Two ways to open it up, both deliberate acts:
 
-1. **Register more sites** in the main repo `.env` — handoffs between
-   registered sites become legal:
+1. **Register more sites** in `~/.config/wtbs/settings.yml` — handoffs
+   between registered sites become legal:
 
-   ```dotenv
-   NGROK_SITES="main,myapp-feat-x"
+   ```yaml
+   ngrok:
+     sites: "main,myapp-feat-x"
    ```
 
    Site names are the lowercased directory basenames (`{site}`); `main` is
    the main repo.
 
-2. **Customize the strap** (`wtbs strap customize ngrok`) — a
-   project-local strap owns its policy; the guard permits everything when it
-   runs from `.wtbs/straps/`. Keep, tune, or delete the `ngrok-guard` call in
-   your copy of `ngrok-share`.
+2. **Customize the strap** (`wtbs strap customize ngrok`) — a project-local
+   strap owns its policy; the guard permits everything when it runs from
+   `.wtbs/straps/`. Keep, tune, or delete the `ngrok-guard` call in your
+   copy.
 
 The guard is footgun protection, not a security boundary: its job is that
 taking the shared URL is always deliberate, never an accident. `--handback`

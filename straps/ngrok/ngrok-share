@@ -11,9 +11,14 @@
 #
 # --handback (run by the destroy hook): valet mode retargets the tunnel to
 # the main repo's site; port mode frees the sacred port. Best effort.
+#
+# Settings come from wtbs's per-user settings file (~/.config/wtbs/
+# settings.yml: ngrok.shared_url / ngrok.share_port / ngrok.sites), exported
+# as NGROK_SHARED_URL / NGROK_SHARE_PORT / NGROK_SITES — never from project
+# files.
 set -euo pipefail
 
-url="${NGROK_SHARED_URL:?set NGROK_SHARED_URL in your main repo .env (e.g. NGROK_SHARED_URL=your-reserved.ngrok.dev)}"
+url="${NGROK_SHARED_URL:?set ngrok.shared_url in ~/.config/wtbs/settings.yml (project files must not carry user-owned domains)}"
 share_port="${NGROK_SHARE_PORT:-8787}"
 handback=0
 [[ "${1:-}" == "--handback" ]] && handback=1

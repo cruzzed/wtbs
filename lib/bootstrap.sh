@@ -116,6 +116,7 @@ run_hooks() {
                 export_env_file "$main_env"
                 export_context_vars "$ctx_name"
                 export WTBS_STATE_FILE="$state_file"
+                export_user_settings
                 # WARNING: hooks come from the project config and active
                 # straps and are executed as-is. Only run this tool against
                 # repositories whose bootstrap config you trust.

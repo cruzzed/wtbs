@@ -304,7 +304,8 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *"refusing to hand https://x.ngrok.dev to 'wt'"* ]]
     [[ "$output" == *"registered to: main"* ]]
-    [[ "$output" == *'NGROK_SITES="main,wt"'* ]]
+    [[ "$output" == *'sites: "main,wt"'* ]]
+    [[ "$output" == *"~/.config/wtbs/settings.yml"* ]]
 }
 
 @test "ngrok-guard permits a registered worktree" {

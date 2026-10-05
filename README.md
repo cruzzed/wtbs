@@ -225,9 +225,24 @@ After `customize`, the local copy shadows the bundled one — edit it freely
 (the bundled default stays convention-pure). Project straps live at
 `.wtbs/straps/<name>/` and are committed to your repo, so a team can share
 its own twist (a Neon branch-per-worktree strap is the classic example).
-Strap settings that are per-user (like a reserved ngrok URL) belong in the
-main repo's `.env` — it's copied to worktrees by `copy: [.env]` and exported
-into hook and exec environments.
+
+### User settings
+
+Per-user strap settings — a reserved ngrok domain, an API key, a personal
+preference — live in wtbs's own space, never in project files:
+
+```yaml
+# ~/.config/wtbs/settings.yml
+ngrok:
+  shared_url: your-reserved.ngrok.dev
+  share_port: 8787
+```
+
+The core exports each `namespace.key` as a namespaced env var
+(`ngrok.shared_url` → `NGROK_SHARED_URL`) into hook and exec environments,
+after any `.env` export, so settings win. Straps read their plain variable
+names; only the source changes. Override the path with
+`WTBS_SETTINGS_FILE` (mainly for tests).
 
 > **Note on line endings:** hook scripts and strap scripts must keep LF
 > endings in worktree checkouts, or their shebangs break

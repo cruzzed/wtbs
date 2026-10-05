@@ -119,3 +119,28 @@ EOF
     [[ "$rendered" == "PARENT=postgres://main MISSING= Q=some value" ]]
     rm -f "$env_file"
 }
+
+@test "export_user_settings exports namespaced keys as env vars" {
+    local settings
+    settings="$(mktemp).yml"
+    cat > "$settings" <<'EOF'
+ngrok:
+  shared_url: franki.ngrok.dev
+  share_port: 8787
+EOF
+    (
+        export WTBS_SETTINGS_FILE="$settings"
+        unset NGROK_SHARED_URL NGROK_SHARE_PORT 2>/dev/null || true
+        export_user_settings
+        [[ "$NGROK_SHARED_URL" == "franki.ngrok.dev" ]]
+        [[ "$NGROK_SHARE_PORT" == "8787" ]]
+    )
+    rm -f "$settings"
+}
+
+@test "export_user_settings is a no-op without a settings file" {
+    (
+        export WTBS_SETTINGS_FILE="/nonexistent/settings.yml"
+        export_user_settings
+    )
+}
