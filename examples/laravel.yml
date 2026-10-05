@@ -10,7 +10,6 @@ copy: [.env]
 db_name: "myapp_{branch_slug}"
 
 env:
-  APP_URL: "https://{site}.test"
   APP_PORT: "{ports.app}"
   VITE_PORT: "{ports.vite}"
 
@@ -20,12 +19,13 @@ ports:
 
 hooks:
   create:
+    # APP_URL is set by the valet strap from the actual valet domain (and the
+    # shortened site name when nginx requires it) -- set it before anything
+    # that might read it.
+    - "valet-site set-url APP_URL {site}"
     - composer install
     - npm ci
     - npm run build
-    # Keep APP_URL pointed at the actually-served name: for over-long
-    # directory names the valet strap serves a shortened site instead.
-    - "valet-site set-url APP_URL {site}"
 
 aliases:
   serve: "php artisan serve --port {ports.app}"
