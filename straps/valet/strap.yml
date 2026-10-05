@@ -3,18 +3,21 @@
 # per-branch serve command or port is needed.
 #
 # If your valet TLD is not "test", run: wtbs strap customize valet
-# and adjust APP_URL. valet secure/unsecure restart nginx internally, so the
+# and adjust. valet secure/unsecure restart nginx internally, so the
 # sudo password may be prompted for during create/destroy.
 #
-# valet-check-name carries the server_names_hash_bucket_size guard: an
-# over-long site name makes nginx fail to start for EVERY valet site.
-
-env:
-  APP_URL: "https://{site}.test"
+# valet-site owns the nginx server_names_hash_bucket_size problem: when the
+# site name derived from the directory would approach the 64-byte bucket, it
+# serves the worktree under a deterministic short name (symlink) instead of
+# failing or warning. The core stays blind to naming.
+#
+# Framework-agnostic by contract: the strap never writes framework keys
+# (like APP_URL). `valet-site url <site>` prints the served URL and
+# `valet-site set-url VAR <site>` sets a caller-chosen .env variable to it —
+# project configs wire their own conventions (see examples/laravel.yml).
 
 hooks:
   create:
-    - "valet-check-name {site}"
-    - 'command -v valet >/dev/null && valet secure "{site}" || true'
+    - 'valet-site secure "{site}"'
   destroy:
-    - 'command -v valet >/dev/null && valet unsecure "{site}" || true'
+    - 'valet-site unsecure "{site}" || true'

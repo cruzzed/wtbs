@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# valet-site secure|unsecure|url|set-url <site> [VAR] — serve this worktree
+# under a valet site name that is SAFE for nginx, truncating only when
+# necessary.
+#
+# valet writes <site>.<tld> plus www. and *. variants into nginx, whose
+# default server_names_hash_bucket_size is 64: an over-long literal server
+# name makes the config test fail and takes down EVERY valet site. Long
+# directory names are fine for git — so when the full name approaches the
+# limit, this script:
+#   - derives a deterministic short name (<segment-truncated>-<sha1-8>)
+#   - maintains a short-named symlink to the worktree (the parked parent
+#     must contain a directory/symlink named after the site for valet)
+#   - secures/unsecures only the short name
+# Short names pass through untouched. The core never learns any of this.
+#
+# Framework-agnostic by contract: this script never touches framework keys
+# like APP_URL. It exposes the served URL (`url`) and a generic setter for a
+# caller-chosen env var (`set-url VAR <site>`) so project configs can wire
+# their own conventions.
+set -euo pipefail
+
+cmd="${1:?usage: valet-site secure|unsecure|url|set-url <site> [VAR]}"
+
+tld="test"
+config="${VALET_CONFIG:-$HOME/.config/valet/config.json}"
+if [[ -f "$config" ]]; then
+    # laravel/valet writes "tld"; valet-linux-plus writes "domain".
+    detected="$(grep -oE '"(tld|domain)"[[:space:]]*:[[:space:]]*"[^"]+"' "$config" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+    [[ -n "${detected:-}" ]] && tld="$detected"
+fi
+
+resolved=""
+truncated=0
+parent=""
+worktree_root="${WTBS_WORKTREE_ROOT:-}"
+
+resolve() {
+    local site="$1"
+    site="$(echo "$site" | tr '[:upper:]' '[:lower:]')"
+    resolved="$site"
+    truncated=0
+    if (( 4 + ${#site} + 1 + ${#tld} > 56 )); then
+        truncated=1
+        # Truncate each dash-delimited segment to 4 chars, then append a hash
+        # of the full name so two long names can never collide on the short.
+        local base hash budget
+        base="$(printf %s "$site" \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+            | awk -F- '{ out = ""; for (i = 1; i <= NF; i++) { if ($i != "") { out = out (out == "" ? "" : "-") substr($i, 1, 4) } } print out }')"
+        hash="$(printf %s "$site" | sha1sum | cut -c1-8)"
+        resolved="${base}-${hash}"
+        # Hard cap with margin under nginx's 64-byte bucket.
+        budget=$((60 - 4 - ${#tld} - 9))
+        (( budget < 4 )) && budget=4
+        if (( ${#resolved} > budget + 9 )); then
+            resolved="$(printf %s "$base" | cut -c1-"$budget")-${hash}"
+        fi
+    fi
+}
+
+served_url() { echo "https://${resolved}.${tld}"; }
+
+case "$cmd" in
+    secure|unsecure)
+        site="${2:?usage: valet-site $cmd <site>}"
+        resolve "$site"
+        parent="$(dirname "${worktree_root:?WTBS_WORKTREE_ROOT is not set}")"
+        if [[ "$cmd" == "secure" ]]; then
+            if [[ $truncated -eq 1 ]]; then
+                echo "valet-site: '$site' is too long for nginx's server_names_hash_bucket_size (64); serving as '$resolved' instead ($(served_url))" >&2
+                ln -sfn "$worktree_root" "$parent/$resolved"
+            fi
+            command -v valet >/dev/null && valet secure "$resolved" || true
+        else
+            if command -v valet >/dev/null; then
+                valet unsecure "$resolved" || true
+            fi
+            if [[ $truncated -eq 1 && -L "$parent/$resolved" ]]; then
+                rm -f "$parent/$resolved"
+            fi
+        fi
+        ;;
+    url)
+        site="${2:?usage: valet-site url <site>}"
+        resolve "$site"
+        served_url
+        ;;
+    set-url)
+        var="${2:?usage: valet-site set-url VAR <site>}"
+        site="${3:?usage: valet-site set-url VAR <site>}"
+        resolve "$site"
+        [[ -f ./.env ]] || exit 0
+        if grep -q "^${var}=" ./.env; then
+            sed -i -E "s|^${var}=.*|${var}=$(served_url)|" ./.env
+        else
+            echo "${var}=$(served_url)" >> ./.env
+        fi
+        ;;
+    *)
+        echo "usage: valet-site secure|unsecure|url|set-url <site> [VAR]" >&2
+        exit 2
+        ;;
+esac

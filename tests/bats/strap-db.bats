@@ -11,7 +11,7 @@ setup() {
     export STRAPS="$(mktemp -d)"
     cp -R "$BATS_TEST_DIRNAME/../../straps/." "$STRAPS/"
     chmod 755 "$STRAPS"/*/db-clone "$STRAPS"/*/db-drop \
-        "$STRAPS"/valet/valet-check-name "$STRAPS"/ngrok/ngrok-share "$STRAPS"/ngrok/ngrok-guard
+        "$STRAPS"/valet/valet-site "$STRAPS"/ngrok/ngrok-share "$STRAPS"/ngrok/ngrok-guard
     export TMP_BIN="$(mktemp -d)"
     export TMP_TEST_DIR="$(mktemp -d)"
     export PATH="$TMP_BIN:$PATH"
@@ -201,6 +201,88 @@ EOF
     [ "$status" -eq 0 ]
     grep -q -- "-d admin_db" "$PG_LOG"
     grep -q 'SQL: DROP DATABASE IF EXISTS "wt_target";' "$PG_LOG"
+}
+
+# ── valet strap ─────────────────────────────────────────────────────────────
+
+fake_valet() {
+    cat > "$TMP_BIN/valet" <<'EOF'
+#!/usr/bin/env bash
+echo "valet $*" >> "$VALET_LOG"
+EOF
+    chmod +x "$TMP_BIN/valet"
+    export VALET_LOG="$TMP_TEST_DIR/valet.log"
+    export VALET_CONFIG="/nonexistent/valet-config.json"
+}
+
+@test "valet-site secures a short name as-is" {
+    fake_valet
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    echo 'APP_URL=https://myapp-feature-x.test' > "$WTBS_WORKTREE_ROOT/.env"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure myapp-feature-x )
+    grep -qx "valet secure myapp-feature-x" "$VALET_LOG"
+    # Framework-agnostic: the strap never touches APP_URL itself.
+    grep -qx "APP_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
+    [[ "$(ls "$TMP_TEST_DIR/wt")" == "myapp-feature-x" ]]
+}
+
+@test "valet-site truncates a long name and symlinks" {
+    fake_valet
+    local long="myapp-feature-shopify-oauth-space-selector-and-then-some-more"
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/$long"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    local output resolved
+    output="$( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure "$long" 2>&1 )"
+    [[ "$output" == *"too long for nginx"* ]]
+    resolved="$(sed -E "s/.*serving as '([^']+)'.*/\1/" <<< "$output")"
+    [[ "$resolved" != "$long" ]]
+    # Deterministic: same input resolves to the same short name.
+    [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url "$long")" == "https://$resolved.test" ]]
+    grep -qx "valet secure $resolved" "$VALET_LOG"
+    [[ -L "$TMP_TEST_DIR/wt/$resolved" ]]
+    [[ "$(readlink "$TMP_TEST_DIR/wt/$resolved")" == "$WTBS_WORKTREE_ROOT" ]]
+}
+
+@test "valet-site unsecure removes the short symlink" {
+    fake_valet
+    local long="myapp-feature-shopify-oauth-space-selector-and-then-some-more"
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/$long"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    local resolved
+    resolved="$( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure "$long" 2>&1 | sed -E "s/.*serving as '([^']+)'.*/\1/")"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" unsecure "$long" )
+    grep -qx "valet unsecure $resolved" "$VALET_LOG"
+    [[ ! -e "$TMP_TEST_DIR/wt/$resolved" ]]
+}
+
+@test "valet-site url reads the TLD from valet config" {
+    fake_valet
+    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
+    echo '{ "tld": "develop" }' > "$VALET_CONFIG"
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url myapp-feature-x)" == "https://myapp-feature-x.develop" ]]
+}
+
+@test "valet-site url falls back to the domain key (valet-linux-plus)" {
+    fake_valet
+    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
+    echo '{ "domain": "develop", "paths": [] }' > "$VALET_CONFIG"
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    [[ "$(cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" url myapp-feature-x)" == "https://myapp-feature-x.develop" ]]
+}
+
+@test "valet-site set-url writes a caller-chosen env var" {
+    fake_valet
+    export WTBS_WORKTREE_ROOT="$TMP_TEST_DIR/wt/myapp-feature-x"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    echo 'APP_URL=https://old.test' > "$WTBS_WORKTREE_ROOT/.env"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" set-url APP_URL myapp-feature-x )
+    grep -qx "APP_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" set-url MY_SERVED_URL myapp-feature-x )
+    grep -qx "MY_SERVED_URL=https://myapp-feature-x.test" "$WTBS_WORKTREE_ROOT/.env"
 }
 
 # ── ngrok strap guard ───────────────────────────────────────────────────────

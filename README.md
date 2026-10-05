@@ -81,8 +81,10 @@ everything after the worktree name is passed to the command verbatim):
   is `<repo>-<branch>` as a sibling directory, with slashes in the branch
   name becoming dashes (`MyRepo` + `feature/shopify-oauth-space-selector` →
   `MyRepo-feature-shopify-oauth-space-selector`). Names stay natural and
-  full-length; the valet strap's `valet-check-name` warns when a name would
-  break nginx — use `--dir <short-name>` in that case
+  full-length — the valet strap resolves nginx-unsafe names automatically
+  (short site name + symlink; `valet-site url|set-url` expose the served
+  URL for project configs), so `--dir` is only needed when you want a
+  specific name
 - `--delete-branch` — also delete the branch after `destroy`
 
 `destroy` always runs `git worktree prune` afterwards, so the branch is
@@ -187,7 +189,7 @@ A strap fragment may contain `copy`, `db_name`, `ports`, `env`, `hooks`,
 | `mysql` | per-worktree | clones the main DB into `{db_name}` on create, drops it on destroy; declares `ports.db` and rewrites `DB_DATABASE`/`FORWARD_DB_PORT` |
 | `postgres` | per-worktree | same for Postgres |
 | `sqlite` | per-worktree | copies the SQLite file to `{db_name}.sqlite`, rewrites `DB_DATABASE` |
-| `valet` | setup | `APP_URL=https://{site}.test`, `valet secure`/`unsecure` hooks, plus the nginx server-name-length guard |
+| `valet` | setup | `valet secure`/`unsecure` hooks; when a name would break nginx it serves a deterministic short name via symlink instead — framework-agnostic: `valet-site url`/`set-url VAR` expose the served URL for project configs |
 | `ngrok` | singleton | ONE reserved ngrok URL shared by all checkouts; `share` verb hands it over, with a steal guard (see `straps/ngrok/README.md`) |
 
 Straps come in three resource shapes:
