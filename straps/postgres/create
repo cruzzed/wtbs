@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # postgres strap — create lifecycle: clone the main repo's database into
-# WTBS_DB_NAME and point the worktree's .env at it.
+# WTBS_DB_NAME and point the worktree's .env at it (docs/adr/0007: straps
+# write their own env lines).
 #
 # Credentials come from the exported main-repo .env (DB_DATABASE = clone
 # SOURCE). Maintenance queries connect to PG_MAINTENANCE_DB (default
@@ -8,13 +9,9 @@
 set -euo pipefail
 
 : "${WTBS_DB_NAME:?WTBS_DB_NAME is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_LIB_DIR:?WTBS_LIB_DIR is not set — lifecycle scripts run inside wtbs}"
+source "$WTBS_LIB_DIR/strap-lib.sh"
 
 "$(dirname "${BASH_SOURCE[0]}")/db-clone" "$WTBS_DB_NAME"
 
-if [[ -f ./.env ]]; then
-    if grep -q '^DB_DATABASE=' ./.env; then
-        sed -i -E "s|^DB_DATABASE=.*|DB_DATABASE=${WTBS_DB_NAME}|" ./.env
-    else
-        echo "DB_DATABASE=${WTBS_DB_NAME}" >> ./.env
-    fi
-fi
+wtbs_env_set DB_DATABASE "$WTBS_DB_NAME"

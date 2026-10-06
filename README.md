@@ -5,10 +5,12 @@ worktree-bootstrap; a `worktree-bootstrap` shim is installed for transition.)
 
 The tool owns the **nouns** — worktree, branch, directory, names, state — and
 your project owns the **verbs**. Given a branch, it materializes an isolated
-environment, renders your declarative shell with a per-branch context, and
-runs it at two lifecycle moments (`create`, `destroy`). Everything that
-names a stack — MySQL, Valet, ngrok, ports — lives in **straps**: opt-in,
-self-contained bundles of policy you can list, shadow, and edit.
+environment and runs it at two lifecycle moments (`create`, `destroy`).
+Everything that names a stack — MySQL, Valet, ngrok, ports — lives in
+**straps**: opt-in, self-contained bundles of policy you can list, publish,
+shadow, and edit. Straps also own all env writing: the core copies and
+mirrors, straps decide what a worktree's `.env` says
+(docs/adr/0007).
 
 The design is recorded as ADRs in [`docs/adr/`](docs/adr/README.md) — read
 them before changing the architecture.
@@ -41,8 +43,8 @@ Copies the project to `~/.local/share/wtbs/` and installs `wtbs` at
 3. `wtbs destroy feature/my-branch` — tear everything down.
 
 Always dry-run a new config first: `wtbs create --dry-run <branch>` renders
-the full plan (strap lifecycles, env updates, every hook) with zero side
-effects.
+the full plan (publishing, residue mirror, strap lifecycles, every hook)
+with zero side effects.
 
 ## Commands
 
@@ -62,7 +64,7 @@ Global options (any position for create/bootstrap/destroy; before the
 worktree name for exec/shorthand): `--dry-run`, `--main-repo <path>`,
 `--config <path>`, `--base <ref>`, `--dir <name>` (default worktree dir is
 `<repo>-<branch>` as a sibling, slashes → dashes, full length),
-`--delete-branch`.
+`--delete-branch`, `--no-publish`.
 
 ## Config file (`.wtbs.yml`)
 
@@ -71,12 +73,12 @@ Every key is optional; no config at all = a plain worktree.
 ```yaml
 straps: [valet, mysql, "auto-ports(serve:8000)"]  # activation, with optional args
 
-copy: [.env]                    # files to copy from the main repo
+copy:
+  ignore: [node_modules, vendor, storage]  # residue-mirror exclusions
 
 db_name: "myapp_{branch_slug}"  # how {db_name} is computed (default wt_{branch_slug})
 
-env:                            # rewrites applied to the worktree's .env
-  SERVE_PORT: "{auto_ports.serve}"
+publish: false                  # skip strap publishing (default: publish on activation)
 
 hooks:                          # the project's own shell, two moments
   create:
@@ -88,44 +90,73 @@ aliases:                        # one-liners for exec
   test: "php artisan test"
 ```
 
-Template tokens in `env`, `hooks`, `aliases`, `db_name`:
+There is deliberately **no `env:` block**. Env writing is strap
+responsibility (docs/adr/0007): bundled straps write their own documented
+keys (the mysql strap writes `DB_DATABASE`, …), and the project's own keys
+are written by the **project env strap** — `.wtbs/straps/env/` in the main
+repo, scaffolded automatically on activation:
+
+```bash
+# .wtbs/straps/env/create — runs after every strap's create lifecycle
+source "${WTBS_LIB_DIR:?}/strap-lib.sh"
+wtbs_env_set DB_PORT "$(wtbs_state_get auto_ports.db)"
+```
+
+### Copy: the residue mirror
+
+`git worktree add` checks out tracked files only. The copy noun mirrors the
+**untracked residue** — everything git did not check out, `.env` included —
+from the main repo into the worktree (docs/adr/0008). Exclusions come from
+`copy.ignore:` in the yml and/or a `.wtbsignore` file at the repo root
+(gitignore-style; both are honored). `.git` and `.wtbs/` are always skipped.
+Copy is **seed-only**: a file the worktree already has is never overwritten,
+so re-running `bootstrap` never clobbers what straps wrote into `.env`.
+
+### Template tokens
+
+Tokens render in `hooks`, `aliases`, and `db_name`:
 
 - `{branch}`, `{branch_slug}`, `{site}`, `{db_name}`, `{worktree_root}`,
   `{main_repo}`
-- `{env.KEY}` — value of KEY from an env file (in hooks: the **main
-  repo's** `.env`, the source of truth; in `env:` entries: the file being
-  rewritten)
+- `{env.KEY}` — value of KEY from the main repo's `.env` (the source of
+  truth)
 - `{strap.key}` — strap-published values from the per-branch state file
-  (e.g. `{auto_ports.serve}`, `{valet.url}`). Straps write them; projects
-  opt in by referencing the token. Nothing is written into project files
-  that the project didn't ask for (docs/adr/0004).
+  (e.g. `{auto_ports.serve}`, `{valet.url}`)
 
 ### The lifecycle pipeline (create)
 
-preflight → copy files → **strap `create` lifecycles** (straps compute:
-allocate, clone, secure; write state) → **`env:` rewrites** (full context —
-strap tokens resolve, even on first create) → project `hooks.create` →
-report. `destroy`: strap `destroy` lifecycles, then project `hooks.destroy`,
-then teardown (registry row, state file, worktree, optional branch delete).
+preflight → **publish straps** (activated bundled straps copied into the
+project's `.wtbs/straps/`; project env strap scaffolded) → **mirror the
+untracked residue** (seed-only, minus ignore rules) → **strap `create`
+lifecycles** in declared order (straps compute and write env: allocate,
+clone, secure) → **project env strap** (`env/create`, maps strap state to
+the project's key names) → project `hooks.create` → report.
+
+`destroy`: strap `destroy` lifecycles → env strap `destroy` → project
+`hooks.destroy` → teardown (registry row, state file, worktree, optional
+branch delete).
 
 ### The hook / lifecycle environment
 
 Scripts run with: worktree as cwd · active strap dirs on PATH · the **main
 repo's `.env` exported** (source credentials) · the context as `WTBS_*`
 (every token: `WTBS_BRANCH`, `WTBS_SITE`, `WTBS_AUTO_PORTS_SERVE`, …) ·
-`WTBS_STATE_FILE` (this branch's wtbs-owned state file) · `WTBS_STRAP_ARGS_<NAME>`
-(activation args, verbatim) · user settings.
+`WTBS_STATE_FILE` (this branch's wtbs-owned state file) · `WTBS_LIB_DIR`
+(`source "$WTBS_LIB_DIR/strap-lib.sh"` for `wtbs_env_set`, `wtbs_state_set`,
+`wtbs_state_get` — all dry-run aware) · `WTBS_STRAP_ARGS_<NAME>` (activation
+args, verbatim) · user settings.
 
 Attachment is one-directional: wtbs keeps state *about* the project in
-`.wtbs/`; the project keeps nothing about wtbs. The project's `.env` is
-written only by `env:` entries the project declares — straps never add
-keys to it, and uninstalling wtbs leaves no residue.
+`.wtbs/`; the project keeps nothing about wtbs beyond the config and straps
+it chose. The project's `.env` is written only by straps — bundled straps
+document exactly which keys they write, and local-first shadowing is the
+recourse. Uninstalling wtbs leaves no residue.
 
 ## Straps
 
 A strap is a **directory**: scripts plus its own private `strap.yml` (read
 by the strap, never by the core). The complete interface
-(docs/adr/0002):
+(docs/adr/0002, docs/adr/0007):
 
 - **Activation with parameters**: `straps: ["auto-ports(serve:8000;db)"]` —
   the core parses the name for resolution/PATH/lifecycle and exports the
@@ -135,21 +166,26 @@ by the strap, never by the core). The complete interface
   `share` script via PATH (exec's raw-command tier).
 - **Lifecycle scripts**: `<strap>/create` and `<strap>/destroy`, invoked
   with the hook environment; straps run before the project's own hooks.
-- **Publish/consume by token**: straps write namespaced keys to the state
-  file (`valet.url`, `auto_ports.serve`); the core loads them as template
-  tokens; projects consume explicitly.
+- **Env writing**: straps write the worktree's `.env` via `wtbs_env_set`
+  (the core lends the pen, straps hold it). Bundled straps write their
+  documented keys; your project's keys belong in the project env strap.
+- **Publish/consume by state**: straps write namespaced keys to the state
+  file (`valet.url`, `auto_ports.serve`) via `wtbs_state_set`; consumers
+  read them via `wtbs_state_get` or as hook tokens.
 
 Resolution is local-first: worktree `.wtbs/straps/<name>` → main repo →
-bundled. `wtbs straps` lists them; `strap customize` copies a bundled strap
-into your repo (it then shadows the bundled one — bundled straps stay
-convention-pure); `strap init` scaffolds a new one.
+bundled. On activation, activated bundled straps are **published** into the
+project's `.wtbs/straps/` (skip with `--no-publish` or `publish: false`) —
+the project owns its copies and bundled straps become seed material. `wtbs
+straps` lists them; `strap customize` copies a bundled strap into your repo;
+`strap init` scaffolds a new one.
 
 ### Bundled straps
 
 | Strap | Shape | What it does |
 |---|---|---|
-| `mysql`, `postgres`, `sqlite` | per-worktree | clones the main DB into `{db_name}` on create (rewrites `DB_DATABASE`), drops it on destroy |
-| `valet` | setup | serves each worktree via valet; nginx-unsafe names are served under a deterministic short name (symlink); served URL published as `{valet.url}` |
+| `mysql`, `postgres`, `sqlite` | per-worktree | clones the main DB into `{db_name}` on create (writes `DB_DATABASE` into the worktree `.env`), drops it on destroy |
+| `valet` | setup | serves each worktree via valet; nginx-unsafe names are served under a deterministic short name (symlink); served URL published as `{valet.url}`; writes nothing to `.env` |
 | `auto-ports` | per-worktree | allocates unique ports per branch for the services declared at activation (`"auto-ports(serve:8000)"`); publishes `{auto_ports.<name>}` — only when a project asks |
 | `ngrok` | singleton | one shared reserved URL with a `share` handoff verb and a steal guard — see `straps/ngrok/README.md` |
 
@@ -188,18 +224,29 @@ PATH, context as `WTBS_*`. Resolution order:
 Exit codes propagate. Presets, aliases, and strap scripts are project files
 executed as-is — only run them for repositories you trust.
 
-## Migrating from v0.3
+## Migrating from v0.3 / v0.4
 
-v0.4 is a clean break, and the tool is renamed (`worktree-bootstrap` →
-`wtbs`; config `.worktree-bootstrap.yml` → `.wtbs.yml`; state
-`.worktree-bootstrap/` → `.wtbs/`). v0.3 keys (`database.*`, `commands.*`,
-`env_updates`, `copy_from_main`, `ports.base.*`) fail fast with a pointer
-here. Within the v0.4 line:
+v0.4 broke with v0.3 keys; v0.5 breaks with v0.4 keys — both fail fast with
+pointers, nothing is silently reinterpreted. The tool is renamed
+(`worktree-bootstrap` → `wtbs`; config `.worktree-bootstrap.yml` →
+`.wtbs.yml`; state `.worktree-bootstrap/` → `.wtbs/`).
+
+v0.4 → v0.5:
+
+- The `env:` block is gone — env writes live in straps (docs/adr/0007).
+  Move each entry into `.wtbs/straps/env/create` as a `wtbs_env_set` line
+  (scaffolded automatically on first activation).
+- `copy: [file, …]` is gone — copy is now a residue mirror of all untracked
+  files (docs/adr/0008). Remove the list; add `copy.ignore:` (or a
+  `.wtbsignore`) for `node_modules`, `vendor`, … instead.
+- Activated straps are now published into your repo's `.wtbs/straps/` on
+  first activation; `--no-publish` / `publish: false` keeps bundled
+  resolution.
+
+v0.3 → v0.4:
 
 - `{ports.*}` / `WTBS_PORT_*` are gone — activate `auto-ports` and use
   `{auto_ports.<name>}` / `WTBS_AUTO_PORTS_<NAME>` (or nothing, under valet).
-- The registry dropped its offset column; port offsets live in the
-  auto-ports strap's own registry.
 - Straps no longer mount config fragments — they are directories with
   lifecycle scripts and verbs (docs/adr/0002).
 

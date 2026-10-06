@@ -12,22 +12,6 @@ env_value() {
     grep -E "^${key}=" "$file" 2>/dev/null | head -n1 | sed -E "s/^${key}=//" | sed -E "s/^['\"](.*)['\"]$/\1/" | tr -d '\r' || true
 }
 
-# Copy an array of files from source_dir to dest_dir. Missing files are skipped silently.
-copy_files() {
-    local source_dir="$1"
-    local dest_dir="$2"
-    shift 2
-    local files=("$@")
-    local file rel_dir
-
-    for file in "${files[@]}"; do
-        [[ -f "$source_dir/$file" ]] || continue
-        rel_dir="$(dirname "$file")"
-        mkdir -p "$dest_dir/$rel_dir"
-        cp "$source_dir/$file" "$dest_dir/$file"
-    done
-}
-
 # Update or append a key in an .env file.
 update_env_key() {
     local file="$1"

@@ -6,7 +6,12 @@
 
 straps: [valet, mysql]
 
-copy: [.env]
+# Untracked files (.env, auth.json, ...) mirror from the main repo
+# automatically (docs/adr/0008); exclude the heavy ones. The mysql strap
+# writes DB_DATABASE into the worktree .env itself.
+
+copy:
+  ignore: [node_modules, vendor]
 
 db_name: "myapp_{branch_slug}"
 

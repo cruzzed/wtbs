@@ -14,10 +14,11 @@
 # Short names pass through untouched. The core never learns any of this.
 #
 # The strap's state record — where valet serves THIS worktree — goes to
-# wtbs's own per-branch state file ($WTBS_STATE_FILE), never to the project's
-# .env: a bootstrap must leave no trace in project files. Projects that want
-# the value opt in via {state.valet_url} in their config; `valet-site url`
-# prints it for humans and scripts.
+# wtbs's own per-branch state file ($WTBS_STATE_FILE): valet deliberately
+# writes nothing to the project's .env (APP_URL belongs to the project —
+# e.g. a static ngrok tunnel). Projects that want the value read it via
+# wtbs_state_get in their env strap; `valet-site url` prints it for humans
+# and scripts.
 set -euo pipefail
 
 cmd="${1:?usage: valet-site secure|unsecure|url <site>}"

@@ -173,6 +173,7 @@ cmd_exec() {
             _exec_path "$worktree_path" "$main_root"
             export_env_file "$env_file"
             export_context_vars ctx
+            export WTBS_LIB_DIR="$LIB_DIR"
             export_strap_args_env_for "$main_root" "$worktree_path"
             # WARNING: presets are project files executed as-is. Only run this
             # against repositories whose .wtbs/ scripts you trust.
@@ -210,6 +211,7 @@ cmd_exec() {
         _exec_path "$worktree_path" "$main_root"
         export_env_file "$env_file"
         export_context_vars ctx
+        export WTBS_LIB_DIR="$LIB_DIR"
         export_strap_args_env_for "$main_root" "$worktree_path"
         # WARNING: alias text comes from the project config and is executed
         # as-is. Only run this against repositories whose config you trust.

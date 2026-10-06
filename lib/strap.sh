@@ -108,43 +108,145 @@ strap_path_prefix() {
     echo "$prefix"
 }
 
-# Run the lifecycle scripts (<strap>/create or <strap>/destroy) of every
-# active strap, in declared order, with the hook subshell environment.
-# Project hooks run after this (strap-then-project).
-run_strap_lifecycles() {
-    local step="$1" ctx_name="$2"
-    local -n sl_ctx="$ctx_name"
+# Run a single strap script (lifecycle or project env strap) in the
+# standard strap subshell: worktree as cwd, active strap dirs on PATH, the
+# MAIN repo's .env exported (source of truth for clone credentials), the
+# context as WTBS_*, WTBS_STATE_FILE, WTBS_LIB_DIR (strap-lib.sh), user
+# settings, and activation args.
+_run_strap_script() {
+    local script="$1" name="$2" ctx_name="$3"
+    local -n rss_ctx="$ctx_name"
 
-    local main_env="${sl_ctx[main_repo]}/.env"
+    local main_env="${rss_ctx[main_repo]}/.env"
     local strap_path
-    strap_path="$(strap_path_prefix "${sl_ctx[worktree_root]}" "${sl_ctx[main_repo]}")"
+    strap_path="$(strap_path_prefix "${rss_ctx[worktree_root]}" "${rss_ctx[main_repo]}")"
     local state_file
-    state_file="$(state_file_path "${sl_ctx[main_repo]}" "${sl_ctx[branch_slug]}")"
+    state_file="$(state_file_path "${rss_ctx[main_repo]}" "${rss_ctx[branch_slug]}")"
     local -a refs=()
     declared_straps refs
 
-    local entry name dir ref
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[dry-run] would run strap '$name' $(basename "$script"): $script"
+        return 0
+    fi
+    info "running strap '$name' $(basename "$script"): $script"
+    (
+        cd "${rss_ctx[worktree_root]}"
+        [[ -n "$strap_path" ]] && export PATH="$strap_path:$PATH"
+        export_env_file "$main_env"
+        export_context_vars "$ctx_name"
+        export WTBS_STATE_FILE="$state_file"
+        export WTBS_LIB_DIR="$LIB_DIR"
+        export_user_settings
+        export_strap_args ${refs[@]+"${refs[@]}"}
+        # WARNING: strap lifecycle scripts are project files executed
+        # as-is. Only run them for repositories you trust.
+        bash "$script"
+    ) || fatal "strap '$name' $(basename "$script") failed: $script"
+}
+
+# Run the <strap>/create or <strap>/destroy lifecycle of every active
+# strap, in declared order. Project hooks run after this
+# (strap-then-project).
+run_strap_lifecycles() {
+    local step="$1" ctx_name="$2"
+    local -n sl_ctx="$ctx_name"
+    local entry name dir
     while IFS=$'\t' read -r name dir; do
+        [[ -n "$dir" ]] || continue
         local script="$dir/$step"
         [[ -f "$script" ]] || continue
-        if [[ $DRY_RUN -eq 1 ]]; then
-            echo "[dry-run] would run strap '$name' $step: $script"
-            continue
-        fi
-        info "running strap '$name' $step: $script"
-        (
-            cd "${sl_ctx[worktree_root]}"
-            [[ -n "$strap_path" ]] && export PATH="$strap_path:$PATH"
-            export_env_file "$main_env"
-            export_context_vars "$ctx_name"
-            export WTBS_STATE_FILE="$state_file"
-            export_user_settings
-            export_strap_args ${refs[@]+"${refs[@]}"}
-            # WARNING: strap lifecycle scripts are project files executed
-            # as-is. Only run them for repositories you trust.
-            bash "$script"
-        ) || fatal "strap '$name' $step failed: $script"
+        _run_strap_script "$script" "$name" "$ctx_name"
     done < <(resolved_straps "${sl_ctx[worktree_root]}" "${sl_ctx[main_repo]}")
+}
+
+# The project env strap (<main-repo>/.wtbs/straps/env) is the project's
+# voice for its own .env keys (docs/adr/0007). It is not declared in the
+# config; the core runs its lifecycles after all declared straps'
+# lifecycles so every strap state key is already published.
+run_env_strap() {
+    local step="$1" ctx_name="$2"
+    local -n es_ctx="$ctx_name"
+    local script="${es_ctx[main_repo]}/.wtbs/straps/env/$step"
+    [[ -f "$script" ]] || return 0
+    _run_strap_script "$script" "env" "$ctx_name"
+}
+
+# Write a fresh project env strap scaffold (see run_env_strap).
+scaffold_env_strap() {
+    local dest="$1"
+    mkdir -p "$dest"
+    cat > "$dest/create" <<'EOF'
+#!/usr/bin/env bash
+# Project env strap — the project's voice for its own .env keys
+# (docs/adr/0007). Runs after every declared strap's create lifecycle, so
+# all strap state is published and readable via wtbs_state_get. Uncomment
+# and adapt; nothing here runs until it says something.
+set -euo pipefail
+source "${WTBS_LIB_DIR:?run inside wtbs}/strap-lib.sh"
+
+# Point the project at auto-ports' allocated ports:
+# wtbs_env_set DB_PORT "$(wtbs_state_get auto_ports.db)"
+#
+# Surface valet's served URL to the app under a boot-owned key
+# (never APP_URL — the project owns that):
+# wtbs_env_set WTBS_VALET_URL "$(wtbs_state_get valet.url)"
+EOF
+    chmod +x "$dest/create"
+    cat > "$dest/destroy" <<'EOF'
+#!/usr/bin/env bash
+# Runs at the destroy lifecycle moment, before the worktree is removed.
+# Nothing to undo by default: the worktree (and its .env) is deleted whole.
+set -euo pipefail
+EOF
+    chmod +x "$dest/destroy"
+}
+
+# Publish on activation (docs/adr/0007): copy each activated strap that
+# resolved to the bundled dir into the project's .wtbs/straps/ so the
+# project owns its copies, and scaffold the project env strap when absent.
+# Skipped with --no-publish or `publish: false`. Local-first resolution
+# picks up the copies for the rest of the run.
+publish_straps() {
+    local ctx_name="$1"
+    local -n ps_ctx="$ctx_name"
+    local main_root="${ps_ctx[main_repo]}"
+
+    local -a refs=()
+    declared_straps refs
+    [[ ${#refs[@]} -gt 0 ]] || return 0
+
+    if [[ "${NO_PUBLISH:-0}" == "1" || "$(get_config publish)" == "false" ]]; then
+        info "strap publishing disabled (--no-publish or publish: false)"
+        return 0
+    fi
+
+    local name dir dest
+    while IFS=$'\t' read -r name dir; do
+        [[ -n "$dir" ]] || continue
+        # Only bundled straps get published; local copies are already owned.
+        [[ "$dir" == "$STRAPS_BUNDLED_DIR/$name" ]] || continue
+        dest="$main_root/.wtbs/straps/$name"
+        if [[ -e "$dest" ]]; then
+            continue
+        elif [[ $DRY_RUN -eq 1 ]]; then
+            echo "[dry-run] would publish strap '$name' -> $dest"
+        else
+            mkdir -p "$(dirname "$dest")"
+            cp -R "$dir" "$dest"
+            info "published strap '$name' -> $dest"
+        fi
+    done < <(resolved_straps "${ps_ctx[worktree_root]}" "$main_root")
+
+    local env_strap="$main_root/.wtbs/straps/env"
+    if [[ ! -e "$env_strap" ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "[dry-run] would scaffold project env strap -> $env_strap"
+        else
+            scaffold_env_strap "$env_strap"
+            info "scaffolded project env strap -> $env_strap"
+        fi
+    fi
 }
 
 cmd_straps() {
@@ -231,9 +333,10 @@ cmd_strap_init() {
 # Runs at the create lifecycle moment, before the project's hooks.create,
 # with the worktree as cwd and the context exported: WTBS_BRANCH,
 # WTBS_BRANCH_SLUG, WTBS_SITE, WTBS_DB_NAME, WTBS_WORKTREE_ROOT,
-# WTBS_MAIN_REPO, WTBS_STATE_FILE (per-branch state file — write
-# namespaced keys like "mystrap.mykey: value" for {mystrap.mykey} tokens),
-# plus any WTBS_STRAP_ARGS_<NAME> activation params and user settings.
+# WTBS_MAIN_REPO, WTBS_STATE_FILE (per-branch state file), WTBS_LIB_DIR
+# (source $WTBS_LIB_DIR/strap-lib.sh for wtbs_env_set / wtbs_state_set /
+# wtbs_state_get), plus any WTBS_STRAP_ARGS_<NAME> activation params and
+# user settings.
 set -euo pipefail
 EOF
     chmod +x "$dest/create"

@@ -78,20 +78,22 @@ config_list() {
     done
 }
 
-# v0.4 is a clean break: v0.3 keys are rejected with a migration pointer
-# instead of being silently reinterpreted.
+# v0.4 broke with v0.3 keys; v0.5 does the same with v0.4 keys: env writing
+# moved to straps (docs/adr/0007) and copy became a residue mirror
+# (docs/adr/0008), so both are rejected with migration pointers instead of
+# being silently reinterpreted.
 reject_legacy_keys() {
     local -a legacy=()
     local k
     for k in "${!CONFIG[@]}"; do
         case "$k" in
-            database.*|commands.*|env_updates.*|copy_from_main*|ports.base.*)
+            database.*|commands.*|env_updates.*|ports.base.*|env.*|copy\[[0-9]*\])
                 legacy+=("$k") ;;
         esac
     done
     if [[ ${#legacy[@]} -gt 0 ]]; then
-        printf 'FATAL: v0.3 config keys are not supported anymore: %s\n' "${legacy[*]}" >&2
-        fatal "v0.4 config surface: straps, copy, db_name, ports, env, hooks, aliases — see examples/"
+        printf 'FATAL: unsupported config keys: %s\n' "${legacy[*]}" >&2
+        fatal "v0.5 config surface: straps, copy.ignore, db_name, hooks, aliases — env writes live in straps (docs/adr/0007), copy mirrors untracked files minus copy.ignore (docs/adr/0008); see examples/"
     fi
 }
 

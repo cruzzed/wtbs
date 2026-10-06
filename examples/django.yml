@@ -4,14 +4,12 @@
 
 straps: ["auto-ports(serve:8000)"]
 
-copy: [.env]
+copy:
+  ignore: [.venv, node_modules, staticfiles]
 
-# With a cloud/branching database (Neon, Supabase, ...), the DB lifecycle is
-# a hook script that owns rewriting DATABASE_URL in the worktree .env — or a
-# project strap under .wtbs/straps/ shared with the team.
-
-env:
-  SERVE_PORT: "{auto_ports.serve}"
+# Project-specific .env writes (e.g. SERVE_PORT, DATABASE_URL for a
+# cloud/branching DB) belong to the project env strap — see
+# .wtbs/straps/env/ after first activation (docs/adr/0007).
 
 hooks:
   create:

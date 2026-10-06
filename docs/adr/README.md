@@ -10,6 +10,8 @@ The design of wtbs, recorded so it doesn't have to be re-derived.
 | [0004](0004-one-directional-attachment.md) | One-directional attachment: the boot attaches to the project, never vice versa |
 | [0005](0005-strap-resource-shapes.md) | Strap resource shapes (per-worktree / process / singleton) and the steal-guard posture |
 | [0006](0006-rename-to-wtbs.md) | Rename worktree-bootstrap to wtbs; full-length directory naming |
+| [0007](0007-env-writing-is-strap-responsibility.md) | Env writing is strap responsibility — the core only copies; publish on activation |
+| [0008](0008-copy-is-a-git-aware-residue-mirror.md) | Copy is a git-aware residue mirror with yml + .wtbsignore exclusions |
 
 New decisions get the next number, `Accepted` status, and the same
 Context / Decision / Consequences shape. Superseded decisions are marked,

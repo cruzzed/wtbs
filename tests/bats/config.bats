@@ -9,13 +9,12 @@ setup() {
 straps:
   - sqlite
 copy:
-  - .env
+  ignore:
+    - node_modules
 db_name: "myapp_{branch_slug}"
 ports:
   app: 8080
   db: 33060
-env:
-  APP_PORT: "{ports.app}"
 hooks:
   create:
     - "echo hi {branch_slug}"
@@ -39,10 +38,10 @@ teardown() {
     load_config "$TMP_CONFIG"
     local -a straps=() copy=() create=()
     config_list straps straps
-    config_list copy copy
+    config_list copy.ignore copy
     config_list hooks.create create
     [[ "${straps[0]}" == "sqlite" ]]
-    [[ "${copy[0]}" == ".env" ]]
+    [[ "${copy[0]}" == "node_modules" ]]
     [[ "${create[0]}" == 'echo hi {branch_slug}' ]]
 }
 
@@ -72,11 +71,27 @@ EOF
     load_config "$TMP_CONFIG"
     run reject_legacy_keys
     [ "$status" -eq 1 ]
-    [[ "$output" == *"v0.3 config keys"* ]]
+    [[ "$output" == *"v0.5 config surface"* ]]
     [[ "$output" == *"examples/"* ]]
 }
 
-@test "reject_legacy_keys accepts the v0.4 surface" {
+@test "reject_legacy_keys fatals on v0.4 env and copy list keys" {
+    # docs/adr/0007+0008: env: moved into straps, copy: became a residue
+    # mirror — the old forms are rejected with a migration pointer.
+    cat > "$TMP_CONFIG" <<'EOF'
+copy: [.env]
+env:
+  APP_PORT: "8080"
+EOF
+    load_config "$TMP_CONFIG"
+    run reject_legacy_keys
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"copy[0]"* ]]
+    [[ "$output" == *"env.APP_PORT"* ]]
+    [[ "$output" == *"v0.5 config surface"* ]]
+}
+
+@test "reject_legacy_keys accepts the v0.5 surface" {
     load_config "$TMP_CONFIG"
     reject_legacy_keys
 }

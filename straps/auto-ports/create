@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # auto-ports create lifecycle: allocate one offset for this branch and
-# publish the concrete ports as state keys (auto_ports.<name>), which the
-# project config consumes as {auto_ports.<name>} and scripts as
-# WTBS_AUTO_PORTS_<NAME>.
+# publish the concrete ports as state keys (auto_ports.<name>) — consumed
+# by other straps via wtbs_state_get, by the project env strap, and as
+# {auto_ports.<name>} tokens in hook commands and aliases.
 #
 # Activation declares the service set (docs/adr/0003):
 #   straps: ["auto-ports(serve:8000;db:33060)"]
@@ -16,10 +16,12 @@ args="${WTBS_STRAP_ARGS_AUTO_PORTS:-}"
 : "${WTBS_BRANCH:?WTBS_BRANCH is not set — lifecycle scripts run inside wtbs}"
 : "${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}"
 : "${WTBS_STATE_FILE:?WTBS_STATE_FILE is not set}"
+: "${WTBS_LIB_DIR:?WTBS_LIB_DIR is not set — lifecycle scripts run inside wtbs}"
 
 strap_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib
 source "$strap_dir/lib"
+source "$WTBS_LIB_DIR/strap-lib.sh"
 
 declare -A bases=()
 arg=""
@@ -41,14 +43,17 @@ registry="$(auto_ports_registry "$WTBS_MAIN_REPO")"
 offset="$(allocate_offset "$registry" "$WTBS_BRANCH" bases)"
 register_offset "$registry" "$WTBS_BRANCH" "$offset"
 
-mkdir -p "$(dirname "$WTBS_STATE_FILE")"
-touch "$WTBS_STATE_FILE"
-tmp="$WTBS_STATE_FILE.tmp"
-grep -vE '^auto_ports\.' "$WTBS_STATE_FILE" > "$tmp" 2>/dev/null || true
+if [[ "${WTBS_DRY_RUN:-0}" != "1" ]]; then
+    # Purge stale keys for services no longer declared, then publish fresh.
+    mkdir -p "$(dirname "$WTBS_STATE_FILE")"
+    touch "$WTBS_STATE_FILE"
+    tmp="$WTBS_STATE_FILE.tmp"
+    grep -vE '^auto_ports\.' "$WTBS_STATE_FILE" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$WTBS_STATE_FILE"
+fi
 name=""
 for name in $(printf '%s\n' "${!bases[@]}" | sort); do
-    echo "auto_ports.${name}: $(( bases[$name] + offset ))" >> "$tmp"
+    wtbs_state_set "auto_ports.${name}" "$(( bases[$name] + offset ))"
 done
-mv "$tmp" "$WTBS_STATE_FILE"
 
 echo "auto-ports: allocated offset $offset for $WTBS_BRANCH (${!bases[*]})"

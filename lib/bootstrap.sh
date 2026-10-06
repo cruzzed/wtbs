@@ -17,6 +17,7 @@ CONFIG_PATH_OVERRIDE=""
 BASE_REF=""
 DELETE_BRANCH=0
 DIR_OVERRIDE=""
+NO_PUBLISH=0
 WORKTREE_ROOT_OVERRIDE=""
 BRANCH_OVERRIDE=""
 
@@ -25,6 +26,7 @@ parse_args() {
         case "$1" in
             --dry-run) DRY_RUN=1 ;;
             --delete-branch) DELETE_BRANCH=1 ;;
+            --no-publish) NO_PUBLISH=1 ;;
             --main-repo) shift; MAIN_ROOT_OVERRIDE="$1" ;;
             --config) shift; CONFIG_PATH_OVERRIDE="$1" ;;
             --base) shift; BASE_REF="$1" ;;
@@ -109,6 +111,7 @@ run_hooks() {
                 export_env_file "$main_env"
                 export_context_vars "$ctx_name"
                 export WTBS_STATE_FILE="$state_file"
+                export WTBS_LIB_DIR="$LIB_DIR"
                 export_user_settings
                 export_strap_args ${refs[@]+"${refs[@]}"}
                 # WARNING: hooks come from the project config and are
@@ -161,7 +164,7 @@ preflight_hook_scripts() {
 }
 
 cmd_bootstrap() {
-    local main_root worktree_root branch branch_slug env_file db_name
+    local main_root worktree_root branch branch_slug db_name
     main_root="$(resolve_main_root "$MAIN_ROOT_OVERRIDE")"
     if [[ -n "$WORKTREE_ROOT_OVERRIDE" ]]; then
         worktree_root="$WORKTREE_ROOT_OVERRIDE"
@@ -175,16 +178,6 @@ cmd_bootstrap() {
     branch="${BRANCH_OVERRIDE:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
     branch_slug="$(slugify "$branch")"
 
-    env_file="$worktree_root/.env"
-    # On a fresh create (and in dry-run) the worktree .env does not exist yet
-    # — copy seeds it later in the run. Resolve {env.KEY} references against
-    # the main repo's .env in that case, which is what copy would seed the
-    # worktree with.
-    local env_refs_file="$env_file"
-    if [[ ! -f "$env_file" ]]; then
-        env_refs_file="$main_root/.env"
-    fi
-
     db_name="$(compute_db_name "$branch" "$branch_slug")"
 
     echo "── wtbs preflight ──────────────────────────"
@@ -194,8 +187,7 @@ cmd_bootstrap() {
     echo "  db name  : $db_name"
 
     # Template context: core tokens + strap-published tokens from previous
-    # runs. Strap create lifecycles (below) write fresh state before the
-    # project's env entries render, so strap tokens resolve on first create.
+    # runs (hook commands may use them, e.g. {auto_ports.serve}).
     local site
     site="$(basename "$worktree_root" | tr '[:upper:]' '[:lower:]')"
     local -A ctx
@@ -211,47 +203,41 @@ cmd_bootstrap() {
         preflight_hook_scripts ctx "$worktree_root" fail
     fi
 
-    # Copy files.
-    local -a files=()
-    config_list copy files
+    # Publish on activation: bundled straps the project activated become
+    # project-owned copies; the project env strap is scaffolded when absent.
+    publish_straps ctx
+
+    # Mirror the untracked residue (docs/adr/0008): everything git did not
+    # check out (.env and friends), minus copy.ignore / .wtbsignore rules.
+    # Seed-only — files the worktree already has are never overwritten.
+    local -a ignores=()
+    config_list copy.ignore ignores
+    if [[ -f "$main_root/.wtbsignore" ]]; then
+        local wl
+        while IFS= read -r wl || [[ -n "$wl" ]]; do
+            [[ "$wl" =~ ^[[:space:]]*# ]] && continue
+            [[ "$wl" =~ ^[[:space:]]*$ ]] && continue
+            ignores+=("$wl")
+        done < "$main_root/.wtbsignore"
+    fi
     if [[ $DRY_RUN -eq 0 ]]; then
-        copy_files "$main_root" "$worktree_root" ${files[@]+"${files[@]}"}
-        info "copied config files"
+        local copy_stats
+        copy_stats="$(copy_residue "$main_root" "$worktree_root" ${ignores[@]+"${ignores[@]}"})"
+        info "mirrored untracked residue ($copy_stats; ignore rules: ${#ignores[@]})"
     else
-        echo "[dry-run] would copy config files: ${files[*]:-<none>}"
+        local -a residue=()
+        mapfile -t residue < <(residue_list "$main_root" ${ignores[@]+"${ignores[@]}"})
+        echo "[dry-run] would mirror ${#residue[@]} untracked file(s) from main repo (seed-only; ignore rules: ${#ignores[@]})"
     fi
 
-    # Straps compute first (docs/adr/0003): allocate, clone, secure; write
-    # their namespaced state keys. Then the project's env entries render
-    # with the full context.
+    # Straps compute and write (docs/adr/0007): allocate, clone, secure —
+    # and write their own .env lines via wtbs_env_set. Then the project
+    # env strap maps strap state to the project's own key names.
     run_strap_lifecycles create ctx
+    run_env_strap create ctx
+    # Hook commands may use strap tokens ({auto_ports.serve}); reload the
+    # freshly published state into the render context.
     load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
-
-    # Apply every env entry from the config, rendered through the full
-    # template context plus {env.KEY} references to existing values. The core
-    # writes nothing on its own — every key is one the project declared.
-    local -A env_entries=()
-    local cfg_key env_key
-    for cfg_key in "${!CONFIG[@]}"; do
-        [[ "$cfg_key" == env.* ]] || continue
-        env_entries["${cfg_key#env.}"]="${CONFIG[$cfg_key]}"
-    done
-    if [[ $DRY_RUN -eq 0 ]]; then
-        local rendered
-        for env_key in "${!env_entries[@]}"; do
-            rendered="$(render_env_refs "${env_entries[$env_key]}" "$env_refs_file")"
-            rendered="$(render_template "$rendered" ctx)"
-            update_env_key "$env_file" "$env_key" "$rendered"
-        done
-        [[ ${#env_entries[@]} -gt 0 ]] && info "updated .env"
-    else
-        local rendered
-        for env_key in "${!env_entries[@]}"; do
-            rendered="$(render_env_refs "${env_entries[$env_key]}" "$env_refs_file")"
-            rendered="$(render_template "$rendered" ctx)"
-            echo "[dry-run] env: $env_key=$rendered"
-        done
-    fi
 
     # Register branch state (single source of truth for destroy/exec).
     local registry_file
@@ -262,6 +248,7 @@ cmd_bootstrap() {
     run_hooks create ctx
     if [[ $DRY_RUN -eq 1 ]]; then
         run_strap_lifecycles destroy ctx
+        run_env_strap destroy ctx
         run_hooks destroy ctx
     fi
 
@@ -350,10 +337,11 @@ cmd_destroy() {
     build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root"
     load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
 
-    # Strap destroy lifecycles, then project destroy hooks — both before
-    # teardown. Failures abort teardown, so best-effort commands should end
-    # with `|| true`.
+    # Strap destroy lifecycles, then the project env strap, then project
+    # destroy hooks — all before teardown. Failures abort teardown, so
+    # best-effort commands should end with `|| true`.
     run_strap_lifecycles destroy ctx
+    run_env_strap destroy ctx
     run_hooks destroy ctx
 
     if [[ $DRY_RUN -eq 1 ]]; then

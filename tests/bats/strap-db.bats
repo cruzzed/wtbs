@@ -17,6 +17,9 @@ setup() {
     export TMP_BIN="$(mktemp -d)"
     export TMP_TEST_DIR="$(mktemp -d)"
     export PATH="$TMP_BIN:$PATH"
+    # The bundled straps source strap-lib.sh via the core-exported WTBS_LIB_DIR
+    # (docs/adr/0007); tests calling the scripts directly must provide it.
+    export WTBS_LIB_DIR="$BATS_TEST_DIRNAME/../../lib"
     export DB_HOST=127.0.0.1 DB_PORT=3306 DB_USERNAME=root DB_PASSWORD=secret
     export DB_DATABASE=source_db
     export WTBS_MAIN_REPO="$TMP_TEST_DIR/main"
@@ -282,6 +285,18 @@ EOF
     run "$STRAPS/auto-ports/create"
     [ "$status" -eq 0 ]
     [[ "$output" == "" ]]
+}
+
+@test "auto-ports create dry-run echoes state keys without writing them" {
+    export WTBS_STRAP_ARGS_AUTO_PORTS="serve:48000"
+    export WTBS_STATE_FILE="$TMP_TEST_DIR/main/.wtbs/worktrees/feature_x.yml"
+    (
+        export WTBS_DRY_RUN=1
+        run "$STRAPS/auto-ports/create"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"[dry-run] state: auto_ports.serve: 48001"* ]]
+    )
+    [[ ! -e "$WTBS_STATE_FILE" ]]
 }
 
 # ── valet strap ─────────────────────────────────────────────────────────────

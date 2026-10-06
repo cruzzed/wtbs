@@ -44,9 +44,12 @@ before the worktree name for exec/shorthand):
                          <repo>-<branch> as a sibling directory, slashes in the
                          branch name becoming dashes).
   --delete-branch        Also delete the branch after destroy.
+  --no-publish           Keep bundled strap resolution; do not copy activated
+                         straps into the project's .wtbs/straps/.
 
-Config (.wtbs.yml): straps, copy, db_name, ports, env, hooks, aliases —
-see examples/ and the README.
+Config (.wtbs.yml): straps, copy.ignore, db_name, hooks, aliases — env
+writes live in straps, copy mirrors untracked files minus the ignore
+rules. See examples/ and the README.
 EOF
 }
 
@@ -62,6 +65,7 @@ main() {
             --help|-h) show_help; exit 0 ;;
             --dry-run) DRY_RUN=1 ;;
             --delete-branch) DELETE_BRANCH=1 ;;
+            --no-publish) NO_PUBLISH=1 ;;
             --main-repo) shift; [[ $# -gt 0 ]] || fatal "--main-repo requires a value"; MAIN_ROOT_OVERRIDE="$1" ;;
             --config) shift; [[ $# -gt 0 ]] || fatal "--config requires a value"; CONFIG_PATH_OVERRIDE="$1" ;;
             --base) shift; [[ $# -gt 0 ]] || fatal "--base requires a value"; BASE_REF="$1" ;;

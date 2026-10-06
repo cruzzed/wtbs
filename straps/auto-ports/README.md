@@ -29,13 +29,18 @@ offsets stay meaningful. Not activated → zero port machinery runs.
 
 ## Consuming the values
 
-Project config renders them like any token (even on first create — the
-strap's create lifecycle runs before `env:` rendering):
+The project env strap reads them straight from state (docs/adr/0007):
+
+```bash
+# .wtbs/straps/env/create
+source "${WTBS_LIB_DIR:?}/strap-lib.sh"
+wtbs_env_set SERVE_PORT "$(wtbs_state_get auto_ports.serve)"
+wtbs_env_set FORWARD_DB_PORT "$(wtbs_state_get auto_ports.db)"
+```
+
+Hook commands and aliases render them as tokens:
 
 ```yaml
-env:
-  SERVE_PORT: "{auto_ports.serve}"
-  FORWARD_DB_PORT: "{auto_ports.db}"
 aliases:
   serve: "python manage.py runserver {auto_ports.serve}"
 ```
@@ -50,7 +55,8 @@ Straps compose defensively — check before assuming another strap is
 active:
 
 ```bash
-[[ -n "${WTBS_AUTO_PORTS_DB:-}" ]] && sed -i -E "s|^FORWARD_DB_PORT=.*|FORWARD_DB_PORT=${WTBS_AUTO_PORTS_DB}|" ./.env
+port="$(wtbs_state_get auto_ports.db)"
+[[ -n "$port" ]] && wtbs_env_set FORWARD_DB_PORT "$port"
 ```
 
 ## State
