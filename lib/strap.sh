@@ -82,6 +82,11 @@ declared_straps() {
 }
 
 # List resolved strap dirs for every declared ref (echoes "name<TAB>dir").
+# The project env strap is core-managed (docs/adr/0007): run_env_strap runs
+# it exactly once, after all declared lifecycles. A project that also
+# declares `env` in straps: gets the declaration ignored (warned once), so
+# it never runs twice and fresh projects don't fatal on the not-yet-
+# scaffolded dir.
 resolved_straps() {
     local worktree_root="$1" main_root="$2"
     local -a refs=()
@@ -91,6 +96,13 @@ resolved_straps() {
         local name dir
         parse_strap_ref "$ref"
         name="$REF_NAME"
+        if [[ "$name" == "env" ]]; then
+            if [[ ${ENV_STRAP_WARNED:-0} -eq 0 ]]; then
+                ENV_STRAP_WARNED=1
+                warn "strap 'env' is core-managed (it runs after all strap lifecycles); remove it from straps: in .wtbs.yml"
+            fi
+            continue
+        fi
         dir="$(resolve_strap "$name" "$worktree_root" "$main_root")"
         [[ -n "$dir" ]] || fatal "strap not found: '$name' (looked in worktree/main .wtbs/straps/ and bundled straps/)"
         printf '%s\t%s\n' "$name" "$dir"
@@ -264,6 +276,8 @@ cmd_straps() {
     local r
     for r in ${refs[@]+"${refs[@]}"}; do
         parse_strap_ref "$r"
+        # env is core-managed: never shown as a declared/active strap.
+        [[ "$REF_NAME" == "env" ]] && continue
         active["$REF_NAME"]="($REF_ARGS)"
     done
 
@@ -297,6 +311,7 @@ cmd_straps() {
         local mark=" " note="${resolved_in[$n]}"
         [[ -n "${active[$n]:-}" ]] && mark="*"
         [[ -n "${shadowed_in[$n]:-}" ]] && note+=" (shadows ${shadowed_in[$n]})"
+        [[ "$n" == "env" ]] && note+=" (core-managed: runs after all lifecycles, do not declare in straps:)"
         printf '  %s %-16s %s\n' "$mark" "$n" "$note"
     done < <(printf '%s\n' "${!resolved_in[@]}" | sort)
     [[ ${#active[@]} -gt 0 ]] && echo "(* = active in .wtbs.yml)"

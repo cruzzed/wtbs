@@ -376,6 +376,65 @@ EOF
     [[ "$(grep -c '^valet\.url:' "$WTBS_STATE_FILE")" -eq 1 ]]
 }
 
+@test "valet-site places the short-name symlink in the parked path that serves the main repo (issue #19)" {
+    # Topology: repos live outside the parked dirs; the parked dir reaches
+    # the main repo through a symlink. The short-name symlink must land where
+    # valet scans — the parked dir — not beside the worktree.
+    fake_valet
+    local code="$TMP_TEST_DIR/code" parked="$TMP_TEST_DIR/parked" elsewhere="$TMP_TEST_DIR/parked-elsewhere"
+    mkdir -p "$code" "$parked" "$elsewhere"
+    ln -s "$WTBS_MAIN_REPO" "$parked/myapp"
+    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
+    printf '{ "tld": "test", "paths": ["%s", "%s"] }' "$elsewhere" "$parked" > "$VALET_CONFIG"
+    local long="myapp-feature-shopify-oauth-space-selector-and-then-some-more"
+    export WTBS_WORKTREE_ROOT="$code/$long"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    local output resolved
+    output="$( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure "$long" 2>&1 )"
+    resolved="$(sed -n "s/.*serving as '\([^']*\)'.*/\1/p" <<< "$output")"
+    [[ "$output" == *"parked via $parked"* ]]
+    [[ -L "$parked/$resolved" ]]
+    [[ "$(readlink "$parked/$resolved")" == "$WTBS_WORKTREE_ROOT" ]]
+    [[ ! -e "$code/$resolved" ]]
+}
+
+@test "valet-site keeps the worktree parent when no parked path serves the main repo" {
+    # Parked paths configured but none contains the main repo: the historical
+    # worktree-parent behavior stands (covers repos sitting directly inside a
+    # parked dir, where parent == parked path anyway).
+    fake_valet
+    local code="$TMP_TEST_DIR/code" parked="$TMP_TEST_DIR/parked"
+    mkdir -p "$code" "$parked"
+    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
+    printf '{ "tld": "test", "paths": ["%s"] }' "$parked" > "$VALET_CONFIG"
+    local long="myapp-feature-shopify-oauth-space-selector-and-then-some-more"
+    export WTBS_WORKTREE_ROOT="$code/$long"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    local resolved
+    resolved="$( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure "$long" 2>&1 | sed -E "s/.*serving as '([^']+)'.*/\1/")"
+    [[ -L "$code/$resolved" ]]
+    [[ ! -e "$parked/$resolved" ]]
+}
+
+@test "valet-site unsecure removes the symlink from parked and legacy parents (issue #19)" {
+    fake_valet
+    local code="$TMP_TEST_DIR/code" parked="$TMP_TEST_DIR/parked"
+    mkdir -p "$code" "$parked"
+    ln -s "$WTBS_MAIN_REPO" "$parked/myapp"
+    export VALET_CONFIG="$TMP_TEST_DIR/valet-config.json"
+    printf '{ "tld": "test", "paths": ["%s"] }' "$parked" > "$VALET_CONFIG"
+    local long="myapp-feature-shopify-oauth-space-selector-and-then-some-more"
+    export WTBS_WORKTREE_ROOT="$code/$long"
+    mkdir -p "$WTBS_WORKTREE_ROOT"
+    local resolved
+    resolved="$( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" secure "$long" 2>&1 | sed -n "s/.*serving as '\([^']*\)'.*/\1/p")"
+    # Simulate an old-run / hand-moved symlink in the worktree parent too.
+    ln -sfn "$WTBS_WORKTREE_ROOT" "$code/$resolved"
+    ( cd "$WTBS_WORKTREE_ROOT" && "$STRAPS/valet/valet-site" unsecure "$long" )
+    [[ ! -e "$parked/$resolved" ]]
+    [[ ! -e "$code/$resolved" ]]
+}
+
 # ── ngrok strap guard ───────────────────────────────────────────────────────
 
 @test "ngrok-guard permits sharing from the main repo" {

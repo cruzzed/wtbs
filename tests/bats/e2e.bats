@@ -326,6 +326,59 @@ EOF
     grep -qx "probe.greeting: hello-feature_envstrap" .wtbs/worktrees/feature_envstrap.yml
 }
 
+@test "declaring the env strap in straps: runs it exactly once (issue #18)" {
+    # The env strap is core-managed: run_env_strap is its single runner. A
+    # declared 'env' entry must be ignored (with a warning), never run a
+    # second time inside the lifecycle pass.
+    cat > "$BATS_TEST_TMPDIR/env-body" <<'EOF'
+echo env-ran >> ./env-runs.log
+EOF
+    commit_env_strap "$BATS_TEST_TMPDIR/env-body"
+    cat > .wtbs.yml <<'EOF'
+straps: [env]
+EOF
+    git add .wtbs.yml && git commit -q -m "config"
+    run "$SCRIPT" create feature/envdup
+    [ "$status" -eq 0 ]
+    local wt
+    wt="$(git worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$TMP_ORIGIN$")"
+    [ "$(grep -c env-ran "$wt/env-runs.log")" -eq 1 ]
+    [[ "$output" == *"core-managed"* ]]
+}
+
+@test "declaring env on a fresh project does not break dry-run (issue #18)" {
+    # The env strap does not exist yet (nothing committed, publish only
+    # scaffolds for real); declaring env must not fatal resolution.
+    cat > .wtbs.yml <<'EOF'
+straps: [env]
+EOF
+    git add .wtbs.yml && git commit -q -m "config"
+    run "$SCRIPT" create --dry-run feature/envfresh
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"core-managed"* ]]
+    [[ "$output" == *"would scaffold project env strap"* ]]
+    [ ! -e .wtbs/straps/env ]
+}
+
+@test "destroy removes the per-branch state file and registry row (issue #17)" {
+    # Pins the core guarantee the auto-ports README promises: strap state
+    # disappears with the state file. (If this passes but real projects still
+    # see residue, the culprit is a file-sync daemon resurrecting deletions,
+    # not the core.)
+    cat > .wtbs.yml <<'EOF'
+straps: ["auto-ports(serve:48100)"]
+EOF
+    git add .wtbs.yml && git commit -q -m "config"
+    run "$SCRIPT" create feature/cleanup
+    [ "$status" -eq 0 ]
+    [ -f .wtbs/worktrees/feature_cleanup.yml ]
+    grep -q "^feature/cleanup" .wtbs/registry.tsv
+    run "$SCRIPT" destroy feature/cleanup
+    [ "$status" -eq 0 ]
+    [ ! -e .wtbs/worktrees/feature_cleanup.yml ]
+    ! grep -q "^feature/cleanup" .wtbs/registry.tsv
+}
+
 @test "v0.3 config keys are rejected with a migration pointer" {
     cat > .wtbs.yml <<'EOF'
 database:
