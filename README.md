@@ -193,12 +193,6 @@ straps` lists them; `strap customize` copies a bundled strap into your repo;
 > worktree checkouts (`core.autocrlf=true` breaks shebangs). Add
 > `*.sh text eol=lf` (or a broader rule) to your project's `.gitattributes`.
 
-> **Synced project trees:** if your projects directory is mirrored to another
-> machine by a sync daemon, note that `destroy` removes wtbs's own state
-> (`.wtbs/`) — but a sync that doesn't propagate deletions will resurrect
-> those files from the other machine. Exclude the project (at least its
-> `.wtbs/`) from the mirror; git already carries what needs to travel.
-
 ### User settings
 
 Per-user strap settings (a reserved ngrok domain, an API key) live in
