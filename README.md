@@ -1,32 +1,24 @@
-# worktree-bootstrap
+# wtbs
 
-A framework-agnostic tool for creating, bootstrapping, and destroying git
-worktrees with per-worktree databases and unique local ports.
+A technology-blind lifecycle runner for git worktrees. (Formerly
+worktree-bootstrap; a `worktree-bootstrap` shim is installed for transition.)
+
+The tool owns the **nouns** — worktree, branch, directory, names, state — and
+your project owns the **verbs**. Given a branch, it materializes an isolated
+environment and runs it at two lifecycle moments (`create`, `destroy`).
+Everything that names a stack — MySQL, Valet, ngrok, ports — lives in
+**straps**: opt-in, self-contained bundles of policy you can list, publish,
+shadow, and edit. Straps also own all env writing: the core copies and
+mirrors, straps decide what a worktree's `.env` says
+(docs/adr/0007).
+
+The design is recorded as ADRs in [`docs/adr/`](docs/adr/README.md) — read
+them before changing the architecture.
 
 The vision: **make working in a worktree as convenient as working in the
-parent project.** Same commands, same tooling, no mental context switch — the
-worktree just has its own database, ports, and environment.
-
-One use case among many: **agentic development**. Coding agents can develop
-many branches in parallel, each in its own fully-provisioned worktree, and
-drive them from the main repo (`worktree-bootstrap feature/x test`) without
-ever leaving the parent project.
-
-## Why
-
-When you maintain a project with long-lived feature branches, you often want a
-separate checkout, database, and set of ports for each branch. This script
-automates that:
-
-1. Creates a git worktree for a branch.
-2. Copies secrets and environment files from the main repo.
-3. Allocates a unique set of local ports.
-4. Creates a new database and clones the main one into it.
-5. Runs install and build commands.
-6. Provides a matching `destroy` command to tear everything down.
-
-It works with Laravel/PHP + MySQL, Django/Python + SQLite/Postgres, or any
-project that can describe its needs in a `.worktree-bootstrap.yml` config file.
+parent project.** Same commands, same tooling, no mental context switch.
+One use case among many: **agentic development** — agents driving many
+branches in parallel from the main repo (`wtbs feature/x test`).
 
 ## Install
 
@@ -34,246 +26,229 @@ project that can describe its needs in a `.worktree-bootstrap.yml` config file.
 ./install.sh
 ```
 
-This copies the project to `~/.local/share/worktree-bootstrap/` and installs a
-launcher at `~/.local/bin/worktree-bootstrap`. Run it again any time you update
-the repo to replace the installed copy.
+Copies the project to `~/.local/share/wtbs/` and installs `wtbs` at
+`~/.local/bin/wtbs`. Run again any time you update the repo.
 
 ## Requirements
 
-- bash
-- git
-- Python 3 + PyYAML (`pip3 install pyyaml`)
-- For MySQL: `mysql` and `mysqldump`
-- For Postgres: `psql`, `pg_dump`, and `createdb`
-- For SQLite: `sqlite3`
+- bash, git
+- Python 3 + PyYAML (`pip3 install pyyaml`) to parse the config
+- whatever your hooks and straps need (mysql/mysqldump for the mysql strap,
+  valet for the valet strap, …)
 
 ## Quick start
 
-1. Add `.worktree-bootstrap.yml` to your project root (see `examples/`).
-2. From the main repo, create and bootstrap a worktree:
-   ```bash
-   worktree-bootstrap create feature/my-branch
-   ```
-3. Change into the new worktree and run the serve commands from the report.
-4. When done, destroy it:
-   ```bash
-   worktree-bootstrap destroy feature/my-branch
-   ```
+1. Add `.wtbs.yml` to your project root (see `examples/`).
+2. `wtbs create feature/my-branch` — create and bootstrap a worktree.
+3. `wtbs destroy feature/my-branch` — tear everything down.
+
+Always dry-run a new config first: `wtbs create --dry-run <branch>` renders
+the full plan (publishing, residue mirror, strap lifecycles, every hook)
+with zero side effects.
 
 ## Commands
 
 ```bash
-worktree-bootstrap create <branch>        # create + bootstrap a worktree
-                                          # (creates the branch if it doesn't exist)
-worktree-bootstrap bootstrap              # bootstrap the current directory
-worktree-bootstrap destroy <branch|path>  # remove worktree, DB, and ports
-worktree-bootstrap exec <branch|path> [cmd...]
-                                          # run a preset/alias/command inside
-                                          # a worktree; no cmd = list presets
-worktree-bootstrap <branch|path> [cmd...] # shorthand for exec
-worktree-bootstrap --help                 # show help
+wtbs create <branch>        # create + bootstrap a worktree (branch optional)
+wtbs bootstrap              # bootstrap the current directory
+wtbs destroy <branch|path>  # remove worktree, straps, and state
+wtbs exec <branch|path> [cmd...]   # run a preset/alias/verb/command inside
+wtbs <branch|path> [cmd...]        # shorthand for exec
+wtbs straps                 # list available straps
+wtbs strap customize <name> # copy a bundled strap into your repo to edit
+wtbs strap init <name>      # scaffold a new project strap
+wtbs --help
 ```
 
-Global options (may appear in any position for `create`/`bootstrap`/`destroy`;
-for `exec`/shorthand they must come **before** the worktree name, since
-everything after the worktree name is passed to the command verbatim):
+Global options (any position for create/bootstrap/destroy; before the
+worktree name for exec/shorthand): `--dry-run`, `--main-repo <path>`,
+`--config <path>`, `--base <ref>`, `--dir <name>` (default worktree dir is
+`<repo>-<branch>` as a sibling, slashes → dashes, full length),
+`--delete-branch`, `--no-publish`.
 
-- `--dry-run` — preview without making changes; on `create` this renders the
-  full bootstrap plan (config, ports, env updates, and every command)
-- `--force-clone` — drop and re-clone an existing database
-- `--check-redis` — include Redis port in availability checks
-- `--check-mailhog` — include MailHog port in availability checks
-- `--main-repo <path>` — override main repo path
-- `--config <path>` — override config file path
-- `--base <ref>` — base ref for a new branch (create only; default: HEAD)
-- `--delete-branch` — also delete the branch after `destroy`
+## Config file (`.wtbs.yml`)
 
-`destroy` always runs `git worktree prune` afterwards, so the branch is
-deletable immediately.
-
-## Config file
-
-Each project adds `.worktree-bootstrap.yml` at its root. If omitted, the tool
-falls back to Laravel/MySQL defaults.
+Every key is optional; no config at all = a plain worktree.
 
 ```yaml
-name: My Project
+straps: [valet, mysql, "auto-ports(serve:8000)"]  # activation, with optional args
 
-copy_from_main:
-  - .env
+copy:
+  ignore: [node_modules, vendor, storage]  # residue-mirror exclusions
 
-env_updates:
-  DB_DATABASE: "myapp_{branch_slug}"
-  APP_PORT: "{ports.app}"
+db_name: "myapp_{branch_slug}"  # how {db_name} is computed (default wt_{branch_slug})
 
-database:
-  driver: mysql          # mysql | sqlite | postgres | none
-  name_prefix: myapp_    # worktree DBs are named {name_prefix}{branch_slug}
-                         # (built-in default: wt_)
-  source_env_key: DB_DATABASE
-  host_env_key: DB_HOST
-  port_env_key: DB_PORT
-  user_env_key: DB_USERNAME
-  pass_env_key: DB_PASSWORD
+publish: false                  # skip strap publishing (default: publish on activation)
 
-ports:
-  base:
-    app: 8080
-    db: 33060
-    vite: 5173
-    serve: 8000
+hooks:                          # the project's own shell, two moments
+  create:
+    - composer install
+  destroy:
+    - "echo bye {db_name}"
 
-commands:
-  install:
-    - npm ci
-  build:
-    - npm run build
-  serve:
-    - "npm run dev"
+aliases:                        # one-liners for exec
+  test: "php artisan test"
 ```
 
-Set `database.driver: none` to disable database handling entirely (the DB
-step is skipped silently). Alternatively, describe the DB lifecycle as
-commands — rendered with the same template context as `commands.*` — which
-replaces the built-in driver dispatch. This covers cloud/branching databases
-(Neon, Supabase, Turso, …), schema-only clones, seeded fixtures, etc.:
+There is deliberately **no `env:` block**. Env writing is strap
+responsibility (docs/adr/0007): bundled straps write their own documented
+keys (the mysql strap writes `DB_DATABASE`, …), and the project's own keys
+are written by the **project env strap** — `.wtbs/straps/env/` in the main
+repo, scaffolded automatically on activation:
+
+```bash
+# .wtbs/straps/env/create — runs after every strap's create lifecycle
+source "${WTBS_LIB_DIR:?}/strap-lib.sh"
+wtbs_env_set DB_PORT "$(wtbs_state_get auto_ports.db)"
+```
+
+### Copy: the residue mirror
+
+`git worktree add` checks out tracked files only. The copy noun mirrors the
+**untracked residue** — everything git did not check out, `.env` included —
+from the main repo into the worktree (docs/adr/0008). Exclusions come from
+`copy.ignore:` in the yml and/or a `.wtbsignore` file at the repo root
+(gitignore-style; both are honored). `.git` and `.wtbs/` are always skipped.
+Copy is **seed-only**: a file the worktree already has is never overwritten,
+so re-running `bootstrap` never clobbers what straps wrote into `.env`.
+
+### Template tokens
+
+Tokens render in `hooks`, `aliases`, and `db_name`:
+
+- `{branch}`, `{branch_slug}`, `{site}`, `{db_name}`, `{worktree_root}`,
+  `{main_repo}`
+- `{env.KEY}` — value of KEY from the main repo's `.env` (the source of
+  truth)
+- `{strap.key}` — strap-published values from the per-branch state file
+  (e.g. `{auto_ports.serve}`, `{valet.url}`)
+
+### The lifecycle pipeline (create)
+
+preflight → **publish straps** (activated bundled straps copied into the
+project's `.wtbs/straps/`; project env strap scaffolded) → **mirror the
+untracked residue** (seed-only, minus ignore rules) → **strap `create`
+lifecycles** in declared order (straps compute and write env: allocate,
+clone, secure) → **project env strap** (`env/create`, maps strap state to
+the project's key names) → project `hooks.create` → report.
+
+`destroy`: strap `destroy` lifecycles → env strap `destroy` → project
+`hooks.destroy` → teardown (registry row, state file, worktree, optional
+branch delete).
+
+### The hook / lifecycle environment
+
+Scripts run with: worktree as cwd · active strap dirs on PATH · the **main
+repo's `.env` exported** (source credentials) · the context as `WTBS_*`
+(every token: `WTBS_BRANCH`, `WTBS_SITE`, `WTBS_AUTO_PORTS_SERVE`, …) ·
+`WTBS_STATE_FILE` (this branch's wtbs-owned state file) · `WTBS_LIB_DIR`
+(`source "$WTBS_LIB_DIR/strap-lib.sh"` for `wtbs_env_set`, `wtbs_state_set`,
+`wtbs_state_get` — all dry-run aware) · `WTBS_STRAP_ARGS_<NAME>` (activation
+args, verbatim) · user settings.
+
+Attachment is one-directional: wtbs keeps state *about* the project in
+`.wtbs/`; the project keeps nothing about wtbs beyond the config and straps
+it chose. The project's `.env` is written only by straps — bundled straps
+document exactly which keys they write, and local-first shadowing is the
+recourse. Uninstalling wtbs leaves no residue.
+
+## Straps
+
+A strap is a **directory**: scripts plus its own private `strap.yml` (read
+by the strap, never by the core). The complete interface
+(docs/adr/0002, docs/adr/0007):
+
+- **Activation with parameters**: `straps: ["auto-ports(serve:8000;db)"]` —
+  the core parses the name for resolution/PATH/lifecycle and exports the
+  args verbatim as `WTBS_STRAP_ARGS_<NAME>`. Arg semantics are the strap's
+  private schema.
+- **Verbs are executable files**: `wtbs <branch> share` runs the strap's
+  `share` script via PATH (exec's raw-command tier).
+- **Lifecycle scripts**: `<strap>/create` and `<strap>/destroy`, invoked
+  with the hook environment; straps run before the project's own hooks.
+- **Env writing**: straps write the worktree's `.env` via `wtbs_env_set`
+  (the core lends the pen, straps hold it). Bundled straps write their
+  documented keys; your project's keys belong in the project env strap.
+- **Publish/consume by state**: straps write namespaced keys to the state
+  file (`valet.url`, `auto_ports.serve`) via `wtbs_state_set`; consumers
+  read them via `wtbs_state_get` or as hook tokens.
+
+Resolution is local-first: worktree `.wtbs/straps/<name>` → main repo →
+bundled. On activation, activated bundled straps are **published** into the
+project's `.wtbs/straps/` (skip with `--no-publish` or `publish: false`) —
+the project owns its copies and bundled straps become seed material. `wtbs
+straps` lists them; `strap customize` copies a bundled strap into your repo;
+`strap init` scaffolds a new one.
+
+### Bundled straps
+
+| Strap | Shape | What it does |
+|---|---|---|
+| `mysql`, `postgres`, `sqlite` | per-worktree | clones the main DB into `{db_name}` on create (writes `DB_DATABASE` into the worktree `.env`), drops it on destroy |
+| `valet` | setup | serves each worktree via valet; nginx-unsafe names are served under a deterministic short name (symlink); served URL published as `{valet.url}`; writes nothing to `.env` |
+| `auto-ports` | per-worktree | allocates unique ports per branch for the services declared at activation (`"auto-ports(serve:8000)"`); publishes `{auto_ports.<name>}` — only when a project asks |
+| `ngrok` | singleton | one shared reserved URL with a `share` handoff verb and a steal guard — see `straps/ngrok/README.md` |
+
+> **Line endings:** hook scripts and strap scripts must keep LF endings in
+> worktree checkouts (`core.autocrlf=true` breaks shebangs). Add
+> `*.sh text eol=lf` (or a broader rule) to your project's `.gitattributes`.
+
+### User settings
+
+Per-user strap settings (a reserved ngrok domain, an API key) live in
+`~/.config/wtbs/settings.yml`, never in project files:
 
 ```yaml
-database:
-  driver: none
-  create: "scripts/db_create.sh {branch_slug}"
-  drop: "scripts/db_drop.sh {branch_slug} || true"
+ngrok:
+  shared_url: your-reserved.ngrok.dev
+  share_port: 8787
 ```
 
-Available templates in `env_updates`, `commands`, `aliases`, and
-`database.create`/`drop`:
-
-- `{branch}` — raw branch name
-- `{branch_slug}` — database-safe slug
-- `{site}` — lowercased worktree directory basename (e.g. the Valet site name)
-- `{db_name}` — computed database name (`{name_prefix}{branch_slug}`)
-- `{worktree_root}` — absolute path of the worktree
-- `{main_repo}` — absolute path of the main repo
-- `{ports.app}`, `{ports.db}`, `{ports.vite}`, `{ports.serve}`, `{ports.redis}`, `{ports.mailhog}`
-
-Inside `env_updates` values you can also reference the current value of a key
-with `{env.KEY}` — useful to preserve an original before overwriting it:
-
-```yaml
-env_updates:
-  PARENT_DATABASE_URL: "{env.DATABASE_URL}"
-  DATABASE_URL: "postgres://localhost/{db_name}"
-```
-
-`commands.destroy` (optional) runs before the worktree is torn down — useful
-for cleanup such as `valet unsecure "{site}"`. Hook failures abort teardown, so
-end best-effort commands with `|| true`.
-
-`env_updates` entries are applied to the worktree's `.env` after it is copied
-from the main repo. The tool itself only writes `DB_DATABASE` (the cloned
-database name), and only for real drivers — not for `driver: none` or
-command-based provisioning, which own their env themselves. When your config
-defines no `env_updates` at all, Laravel/Sail defaults kick in
-(`APP_PORT={ports.app}`, `FORWARD_DB_PORT={ports.db}`,
-`VITE_PORT={ports.vite}`); once you define any `env_updates`, only the keys
-you declare are written.
-
-Before any work begins, bootstrap verifies that script paths referenced by
-`commands.*` and `database.create`/`drop` exist in the worktree checkout and
-fails fast with a clear message if any are missing (hook scripts must be
-committed to the branch being bootstrapped). The final report reflects what
-actually happened: skipped database steps are shown as such, and ports not
-referenced by your config are listed as allocated-but-unused.
-
-If you define `commands.install` or `commands.build`, the built-in defaults
-(`composer install`, `npm ci`, `npm run build`) are replaced entirely, not
-merged.
+The core exports each `namespace.key` as a namespaced env var
+(`ngrok.shared_url` → `NGROK_SHARED_URL`) into hook and exec environments,
+after any `.env` export, so settings win. Override the path with
+`WTBS_SETTINGS_FILE` (mainly for tests).
 
 ## Running commands in a worktree
 
-`exec` runs something inside a worktree without leaving the main repo, with
-the worktree's own execution context:
+`exec` runs something inside a worktree with its own context — cwd, `.env`
+exported, strap dirs plus `.venv/bin`/`vendor/bin`/`node_modules/.bin` on
+PATH, context as `WTBS_*`. Resolution order:
 
-```bash
-worktree-bootstrap feature/x test              # shorthand
-worktree-bootstrap exec feature/x runserver    # explicit form
-worktree-bootstrap exec feature/x              # list available presets/aliases
-```
+1. **Preset** — `.wtbs/<name>` (worktree shadows main); bash with args as
+   positionals; CR-stripped; not template-rendered (use `WTBS_*`).
+2. **Alias** — `aliases:` one-liner, template-rendered, args appended.
+3. **Raw command** — verbatim, template-rendered; **this tier resolves strap
+   verbs** (executable files in active strap dirs).
 
-The command runs with the worktree directory as cwd, the worktree's `.env`
-exported, and the worktree's `.venv/bin`, `vendor/bin`, and
-`node_modules/.bin` prepended to PATH (whichever exist) — so `python`,
-`pytest`, `php`, or `npm` resolve against the worktree's own installs. The
-command's exit code propagates, so this composes with scripts and CI.
-
-The command name resolves in this order:
-
-1. **Preset script** — `.wtbs/<name>` in the worktree checkout, falling back
-   to `.wtbs/<name>` in the main repo (so a branch can carry its own
-   commands, or override project-wide ones). Think Django management
-   commands: each file in `.wtbs/` is a named command, run with bash. Extra
-   arguments arrive as positional parameters (`"$@"`). Presets are **not**
-   template-rendered (real scripts may contain literal `{` braces); instead
-   the template context is exported as environment variables:
-   `WTBS_BRANCH`, `WTBS_BRANCH_SLUG`, `WTBS_SITE`, `WTBS_DB_NAME`,
-   `WTBS_WORKTREE_ROOT`, `WTBS_MAIN_REPO`, and `WTBS_PORT_APP` / `_DB` /
-   `_VITE` / `_SERVE` / `_REDIS` / `_MAILHOG`. Trailing CR is stripped before
-   execution, so CRLF checkouts (`core.autocrlf=true`) don't break presets.
-
-   ```bash
-   # .wtbs/runserver
-   #!/usr/bin/env bash
-   exec uv run python manage.py runserver "${WTBS_PORT_SERVE:-8000}" "$@"
-   ```
-
-2. **Alias** — a one-liner from `aliases:` in `.worktree-bootstrap.yml`,
-   rendered with the same template tokens as `commands.*`; extra arguments
-   are appended:
-
-   ```yaml
-   aliases:
-     runserver: "uv run python manage.py runserver {ports.serve}"
-     test: "uv run pytest"
-   ```
-
-   `worktree-bootstrap feature/x test -k login` → `uv run pytest -k login`.
-
-3. **Raw command** — anything else is run verbatim (still template-rendered,
-   so `worktree-bootstrap feature/x echo {db_name}` works).
-
-Use presets for anything non-trivial and aliases for one-liners; both are
-listed by `worktree-bootstrap exec <branch|path>` with no command. The same
-trust warning as `commands.*` applies: presets and aliases are project files
+Exit codes propagate. Presets, aliases, and strap scripts are project files
 executed as-is — only run them for repositories you trust.
 
-## Serving with Valet (optional)
+## Migrating from v0.3 / v0.4
 
-If [Laravel Valet](https://laravel.com/docs/valet) (or valet-linux-plus on
-Linux) parks the parent directory of your worktrees (`valet park ~/www`), each
-worktree is automatically served at `https://{worktree-dir}.test` — no per-
-branch serve command or port needed. Use the `{site}` template to wire TLS and
-`APP_URL` per worktree:
+v0.4 broke with v0.3 keys; v0.5 breaks with v0.4 keys — both fail fast with
+pointers, nothing is silently reinterpreted. The tool is renamed
+(`worktree-bootstrap` → `wtbs`; config `.worktree-bootstrap.yml` →
+`.wtbs.yml`; state `.worktree-bootstrap/` → `.wtbs/`).
 
-```yaml
-env_updates:
-  APP_URL: "https://{site}.test"
+v0.4 → v0.5:
 
-commands:
-  build:
-    - npm run build
-    - "command -v valet >/dev/null && valet secure \"{site}\" || true"
-  destroy:
-    - "command -v valet >/dev/null && valet unsecure \"{site}\" || true"
-```
+- The `env:` block is gone — env writes live in straps (docs/adr/0007).
+  Move each entry into `.wtbs/straps/env/create` as a `wtbs_env_set` line
+  (scaffolded automatically on first activation).
+- `copy: [file, …]` is gone — copy is now a residue mirror of all untracked
+  files (docs/adr/0008). Remove the list; add `copy.ignore:` (or a
+  `.wtbsignore`) for `node_modules`, `vendor`, … instead.
+- Activated straps are now published into your repo's `.wtbs/straps/` on
+  first activation; `--no-publish` / `publish: false` keeps bundled
+  resolution.
 
-`valet secure`/`unsecure` restart nginx internally, so create/destroy may
-prompt for the sudo password.
+v0.3 → v0.4:
 
-## How ports are allocated
-
-The tool keeps a registry at `<main-repo>/.worktree-bootstrap/ports.tsv`. It
-reuses the same offset for a branch, reclaims free offsets, or allocates a new
-one above the highest registered offset. Base ports come from the config file.
+- `{ports.*}` / `WTBS_PORT_*` are gone — activate `auto-ports` and use
+  `{auto_ports.<name>}` / `WTBS_AUTO_PORTS_<NAME>` (or nothing, under valet).
+- Straps no longer mount config fragments — they are directories with
+  lifecycle scripts and verbs (docs/adr/0002).
 
 ## License
 

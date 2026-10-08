@@ -1,0 +1,6 @@
+# sqlite strap — per-worktree SQLite database copying.
+#
+# Lifecycle: create copies the main repo's DB file (DB_DATABASE from the
+# exported main-repo .env, relative paths against the main repo) to
+# {db_name}.sqlite in the worktree and rewrites DB_DATABASE; destroy
+# deletes it. This file is documentation — the core never reads it.

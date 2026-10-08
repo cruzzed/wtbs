@@ -1,0 +1,10 @@
+# ngrok strap — the reference singleton (docs/adr/0005). One shared reserved
+# URL; whichever checkout runs `share` last owns it. This file is private
+# config — the core never reads it. A customized copy in a project may hold
+# project-level policy, e.g.:
+#
+#   sites: "main,myapp-feat-x"
+#
+# which the steal guard prefers over the user settings
+# (~/.config/wtbs/settings.yml: ngrok.sites). See README.md for the full
+# contract.

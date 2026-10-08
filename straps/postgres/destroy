@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# postgres strap — destroy lifecycle: drop the worktree's database.
+set -euo pipefail
+
+: "${WTBS_DB_NAME:?WTBS_DB_NAME is not set — lifecycle scripts run inside wtbs}"
+
+"$(dirname "${BASH_SOURCE[0]}")/db-drop" "$WTBS_DB_NAME" || true

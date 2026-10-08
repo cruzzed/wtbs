@@ -1,2 +1,4 @@
 *.sh text eol=lf
 *.bats text eol=lf
+# Extension-less strap scripts are executed via PATH; CRLF breaks the shebang.
+straps/** text eol=lf

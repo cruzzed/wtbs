@@ -1,0 +1,107 @@
+# Sourceable allocation logic for the auto-ports strap. The create/destroy
+# scripts source this file; tests source it directly and override
+# port_in_use to make allocation deterministic.
+
+# Return 0 if the port is taken. Override in tests.
+port_in_use() {
+    local port="$1"
+    (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null
+}
+
+# Echo the ports file/registry paths for a main repo.
+auto_ports_registry() { echo "$1/.wtbs/auto-ports.tsv"; }
+
+# Escape a string for safe use in a POSIX extended regular expression.
+_ap_regex_escape() {
+    sed -E 's/[][\\^$.*+?{}|()]/\\&/g' <<< "$1"
+}
+
+# Return 0 if every declared port is free for the given offset.
+_ap_offset_available() {
+    local offset="$1" base_name="$2"
+    local -n ap_bases="$base_name"
+    local name
+    for name in "${!ap_bases[@]}"; do
+        if port_in_use $(( ap_bases[$name] + offset )); then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Allocate an offset for a branch. Echoes the offset.
+#   allocate_offset <registry_file> <branch> <bases_assoc_name>
+# Strategy: reuse this branch's registered offset, reclaim a free registered
+# offset, or allocate above the highest registered one.
+allocate_offset() {
+    local registry_file="$1" branch="$2" base_name="$3"
+    mkdir -p "$(dirname "$registry_file")"
+    touch "$registry_file"
+
+    local existing
+    existing="$(awk -F'\t' -v b="$branch" '$1 == b {print $2; exit}' "$registry_file")"
+    if [[ "$existing" =~ ^[0-9]+$ ]]; then
+        echo "$existing"
+        return 0
+    fi
+
+    local offsets=() off
+    while IFS=$'\t' read -r _ off _; do
+        [[ "$off" =~ ^[0-9]+$ ]] && offsets+=("$off")
+    done < "$registry_file"
+
+    while IFS= read -r off; do
+        [[ -z "$off" ]] && continue
+        if _ap_offset_available "$off" "$base_name"; then
+            echo "$off"
+            return 0
+        fi
+    done < <(printf '%s\n' ${offsets[@]+"${offsets[@]}"} | sort -n -u)
+
+    local max_offset=0
+    for off in ${offsets[@]+"${offsets[@]}"}; do
+        (( off > max_offset )) && max_offset=$off
+    done
+
+    off=$((max_offset + 1))
+    while [[ $off -le 1000 ]]; do
+        if _ap_offset_available "$off" "$base_name"; then
+            echo "$off"
+            return 0
+        fi
+        off=$((off + 1))
+    done
+
+    echo "auto-ports: could not find a free offset after 1000 attempts" >&2
+    return 1
+}
+
+# Register (or refresh) a branch's offset in the strap registry.
+register_offset() {
+    local registry_file="$1" branch="$2" offset="$3"
+    mkdir -p "$(dirname "$registry_file")"
+    touch "$registry_file"
+    local tmp
+    tmp="$(mktemp)"
+    grep -vE "^$(_ap_regex_escape "$branch")"$'\t' "$registry_file" > "$tmp" 2>/dev/null || true
+    printf '%s\t%s\t%s\n' "$branch" "$offset" "$(date -Iseconds)" >> "$tmp"
+    mv "$tmp" "$registry_file"
+}
+
+# Remove a branch's offset (called by destroy).
+release_offset() {
+    local registry_file="$1" branch="$2"
+    [[ -f "$registry_file" ]] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    grep -vE "^$(_ap_regex_escape "$branch")"$'\t' "$registry_file" > "$tmp" || true
+    mv "$tmp" "$registry_file"
+}
+
+# Deterministic default base for a port name declared without one:
+# stable hash into the 20000-39999 range.
+default_base() {
+    local sum
+    sum="$(printf %s "$1" | cksum | cut -d' ' -f1)"
+    echo $(( 20000 + (sum % 20000) ))
+}

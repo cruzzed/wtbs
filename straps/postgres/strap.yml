@@ -1,0 +1,6 @@
+# postgres strap — per-worktree Postgres database cloning.
+#
+# Lifecycle: create clones the main repo's DB into {db_name} and rewrites
+# DB_DATABASE; destroy drops it. Credentials from the exported main-repo
+# .env; PG_MAINTENANCE_DB selects the maintenance database. Requires: psql,
+# pg_dump. This file is documentation — the core never reads it.

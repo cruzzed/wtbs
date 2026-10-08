@@ -2,18 +2,20 @@
 
 setup() {
     export TMP_ORIGIN="$(mktemp -d)"
-    export SCRIPT="$BATS_TEST_DIRNAME/../../worktree-bootstrap.sh"
+    export SCRIPT="$BATS_TEST_DIRNAME/../../wtbs.sh"
+    # Hermetic: no user settings (~/.config/wtbs/settings.yml) during tests.
+    export WTBS_SETTINGS_FILE="/nonexistent/wtbs-settings.yml"
     export WT="${TMP_ORIGIN}-feature-exec"
     cd "$TMP_ORIGIN"
     git init -q
     git config user.email "test@example.com"
     git config user.name "Test User"
-    cat > .worktree-bootstrap.yml <<'EOF'
-database:
-  driver: none
+    # This machine sets core.autocrlf=true globally; committed scripts must
+    # keep LF endings or their shebangs break in worktree checkouts.
+    git config core.autocrlf false
+    cat > .wtbs.yml <<'EOF'
 aliases:
   whereami: "pwd > whereami.out"
-  serveport: "echo {ports.serve} > port.out"
   greet: "echo hello"
   envvar: "echo $SECRET_KEY"
   fail3: "exit 3"
@@ -21,17 +23,30 @@ EOF
     mkdir -p .wtbs
     cat > .wtbs/mkpreset <<'EOF'
 #!/usr/bin/env bash
-echo "preset:$WTBS_PORT_SERVE:$1" > preset.out
+echo "preset:$WTBS_BRANCH_SLUG:$1" > preset.out
 EOF
     cat > .wtbs/shadow <<'EOF'
 #!/usr/bin/env bash
 echo from-main
 EOF
+    # A project strap whose scripts must land on PATH during exec.
+    mkdir -p .wtbs/straps/toolstrap
+    cat > .wtbs/straps/toolstrap/strap.yml <<'EOF'
+# private config — the core never reads this
+EOF
+    cat > .wtbs/straps/toolstrap/strap-tool <<'EOF'
+#!/usr/bin/env bash
+echo strap-tool-ran "$@"
+EOF
+    chmod +x .wtbs/straps/toolstrap/strap-tool
     git add -A
     git commit -q -m "initial"
     git branch feature/exec
     git worktree add -q "$WT" feature/exec
-    printf 'SECRET_KEY=from-env\n# WORKTREE_BOOTSTRAP=branch:feature/exec:offset:2:db:none_feature-exec\n' > "$WT/.env"
+    printf 'SECRET_KEY=from-env\n' > "$WT/.env"
+    # Branch state lives in the registry (branch, db name, date).
+    mkdir -p .wtbs
+    printf 'feature/exec\ttest_feature_exec\t2026-01-01T00:00:00\n' > .wtbs/registry.tsv
 }
 
 teardown() {
@@ -43,12 +58,6 @@ teardown() {
     [ "$status" -eq 0 ]
     [ -f "$WT/whereami.out" ]
     grep -qx "$WT" "$WT/whereami.out"
-}
-
-@test "exec renders the template context in aliases" {
-    run "$SCRIPT" exec feature/exec serveport
-    [ "$status" -eq 0 ]
-    [ "$(cat "$WT/port.out")" = "8002" ]
 }
 
 @test "shorthand form behaves like exec" {
@@ -63,10 +72,10 @@ teardown() {
     [[ "$output" == *"hello world"* ]]
 }
 
-@test "exec falls back to raw commands and renders templates" {
-    run "$SCRIPT" exec feature/exec echo raw '{ports.serve}'
+@test "exec falls back to raw commands" {
+    run "$SCRIPT" exec feature/exec echo raw done
     [ "$status" -eq 0 ]
-    [[ "$output" == *"raw 8002"* ]]
+    [[ "$output" == *"raw done"* ]]
 }
 
 @test "exec prepends the worktree .venv/bin to PATH" {
@@ -97,11 +106,23 @@ teardown() {
     [ ! -e "$WT/whereami.out" ]
 }
 
-@test "exec with no command lists the project aliases" {
+@test "exec with no command lists straps, verbs, presets and aliases" {
+    cat > .wtbs.yml <<'EOF'
+straps: [toolstrap]
+aliases:
+  whereami: "pwd > whereami.out"
+  greet: "echo hello"
+EOF
     run "$SCRIPT" exec feature/exec
     [ "$status" -eq 0 ]
     [[ "$output" == *"worktree: $WT"* ]]
-    [[ "$output" == *"whereami"* ]]
+    [[ "$output" == *"straps (active):"* ]]
+    [[ "$output" == *"toolstrap"* ]]
+    [[ "$output" == *"verbs (strap scripts):"* ]]
+    [[ "$output" == *"strap-tool"* ]]
+    [[ "$output" == *"presets (.wtbs/):"* ]]
+    [[ "$output" == *"mkpreset"* ]]
+    [[ "$output" == *"aliases (.wtbs.yml):"* ]]
     [[ "$output" == *"greet"* ]]
 }
 
@@ -113,7 +134,7 @@ teardown() {
 @test "exec runs a .wtbs preset with WTBS_* env and positional args" {
     run "$SCRIPT" exec feature/exec mkpreset hello
     [ "$status" -eq 0 ]
-    [ "$(cat "$WT/preset.out")" = "preset:8002:hello" ]
+    [ "$(cat "$WT/preset.out")" = "preset:feature_exec:hello" ]
 }
 
 @test "worktree .wtbs presets shadow main-repo presets" {
@@ -131,11 +152,25 @@ teardown() {
     [ ! -e "$WT/preset.out" ]
 }
 
-@test "exec with no command lists presets and aliases" {
-    run "$SCRIPT" exec feature/exec
+@test "exec resolves a strap verb through the raw-command tier" {
+    cat > .wtbs.yml <<'EOF'
+straps: [toolstrap]
+aliases:
+  whereami: "pwd > whereami.out"
+EOF
+    run "$SCRIPT" exec feature/exec strap-tool with-args
     [ "$status" -eq 0 ]
-    [[ "$output" == *"presets (.wtbs/):"* ]]
-    [[ "$output" == *"mkpreset"* ]]
-    [[ "$output" == *"aliases (.worktree-bootstrap.yml):"* ]]
-    [[ "$output" == *"greet"* ]]
+    [[ "$output" == *"strap-tool-ran with-args"* ]]
+}
+
+@test "exec templates resolve strap-published state tokens" {
+    cat > .wtbs.yml <<'EOF'
+aliases:
+  served: "echo served at {valet.url}"
+EOF
+    mkdir -p .wtbs/worktrees
+    printf 'valet.url: https://short.develop\n' > .wtbs/worktrees/feature_exec.yml
+    run "$SCRIPT" exec feature/exec served
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"served at https://short.develop"* ]]
 }

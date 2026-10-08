@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Copy a SQLite database file. Relative source paths resolve against the
+# main repo. Idempotent: an existing target is skipped unless --force.
+set -euo pipefail
+
+source_arg="${1:?usage: db-clone <source-file> <target-file> [--force]}"
+target="${2:?usage: db-clone <source-file> <target-file> [--force]}"
+
+case "$source_arg" in
+    /*) source="$source_arg" ;;
+    *)  source="${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}/$source_arg" ;;
+esac
+
+if [[ "$source" == "$target" ]]; then
+    echo "db-clone: source and target are the same ($target); skipping"
+    exit 0
+fi
+if [[ -f "$target" && "${3:-}" != "--force" ]]; then
+    echo "db-clone: $target already exists; skipping (use --force to re-clone)"
+    exit 0
+fi
+
+if [[ -f "$source" ]]; then
+    cp "$source" "$target"
+    echo "db-clone: cloned $source -> $target"
+elif command -v sqlite3 >/dev/null; then
+    sqlite3 "$target" "VACUUM;"
+    echo "db-clone: source $source not found; created empty $target"
+else
+    : > "$target"
+    echo "db-clone: source $source not found; touched empty $target"
+fi

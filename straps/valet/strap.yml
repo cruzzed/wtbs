@@ -1,0 +1,17 @@
+# Laravel Valet strap — each worktree is served at https://{site}.<tld> —
+# park the parent directory of your worktrees once (valet park <dir>).
+#
+# valet-site owns the nginx server_names_hash_bucket_size problem: when the
+# site name derived from the directory would approach the 64-byte bucket,
+# the worktree is served under a deterministic short name (symlink) instead
+# of failing or warning. The core stays blind to naming.
+#
+# Attachment is one-directional (docs/adr/0004): the strap records where it
+# serves this worktree in wtbs's own state file (key valet.url) — never in
+# the project's .env. APP_URL is the project's business (often a static
+# ngrok tunnel for webhooks) and is never touched. Projects opt in to the
+# served URL via {valet.url}, or humans run `valet-site url <site>`.
+#
+# valet secure/unsecure restart nginx internally, so the sudo password may
+# be prompted for during create/destroy. This file is documentation — the
+# core never reads it; private config goes here in a customized copy.

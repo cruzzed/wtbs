@@ -1,0 +1,9 @@
+# mysql strap — per-worktree MySQL database cloning.
+#
+# Lifecycle: create clones the main repo's DB into {db_name} and rewrites
+# the worktree's DB_DATABASE; destroy drops it. Credentials are read from
+# the exported main-repo .env (DB_HOST, DB_PORT, DB_USERNAME, DB_PASSWORD,
+# DB_DATABASE = clone source). Requires: mysql, mysqldump.
+#
+# This file is documentation — the core never reads it. Private config goes
+# here when this strap is customized into a project.

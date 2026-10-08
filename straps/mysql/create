@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# mysql strap — create lifecycle: clone the main repo's database into
+# WTBS_DB_NAME and point the worktree's .env at it (docs/adr/0007: straps
+# write their own env lines).
+#
+# Credentials come from the hook environment, which exports the main repo's
+# .env — so DB_DATABASE there is the clone SOURCE. Requires: mysql,
+# mysqldump.
+set -euo pipefail
+
+: "${WTBS_DB_NAME:?WTBS_DB_NAME is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_LIB_DIR:?WTBS_LIB_DIR is not set — lifecycle scripts run inside wtbs}"
+source "$WTBS_LIB_DIR/strap-lib.sh"
+
+"$(dirname "${BASH_SOURCE[0]}")/db-clone" "$WTBS_DB_NAME"
+
+wtbs_env_set DB_DATABASE "$WTBS_DB_NAME"

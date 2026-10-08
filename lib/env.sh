@@ -12,22 +12,6 @@ env_value() {
     grep -E "^${key}=" "$file" 2>/dev/null | head -n1 | sed -E "s/^${key}=//" | sed -E "s/^['\"](.*)['\"]$/\1/" | tr -d '\r' || true
 }
 
-# Copy an array of files from source_dir to dest_dir. Missing files are skipped silently.
-copy_files() {
-    local source_dir="$1"
-    local dest_dir="$2"
-    shift 2
-    local files=("$@")
-    local file rel_dir
-
-    for file in "${files[@]}"; do
-        [[ -f "$source_dir/$file" ]] || continue
-        rel_dir="$(dirname "$file")"
-        mkdir -p "$dest_dir/$rel_dir"
-        cp "$source_dir/$file" "$dest_dir/$file"
-    done
-}
-
 # Update or append a key in an .env file.
 update_env_key() {
     local file="$1"
@@ -41,12 +25,6 @@ update_env_key() {
     else
         echo "${key}=${value}" >> "$file"
     fi
-}
-
-# Remove the WORKTREE_BOOTSTRAP idempotency marker from an .env file.
-remove_marker() {
-    local file="$1"
-    sed -i '/^# WORKTREE_BOOTSTRAP=/d' "$file"
 }
 
 # Export every KEY=VALUE pair from an .env file into the environment.
@@ -71,14 +49,4 @@ export_env_file() {
         fi
         export "$key=$value"
     done < "$file"
-}
-
-# Append a fresh marker line.
-write_marker() {
-    local file="$1"
-    local branch="$2"
-    local offset="$3"
-    local db_name="$4"
-    remove_marker "$file"
-    echo "# WORKTREE_BOOTSTRAP=branch:${branch}:offset:${offset}:db:${db_name}" >> "$file"
 }

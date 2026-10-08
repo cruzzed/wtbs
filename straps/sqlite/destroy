@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# sqlite strap — destroy lifecycle: delete the worktree's database file.
+set -euo pipefail
+
+: "${WTBS_DB_NAME:?WTBS_DB_NAME is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_WORKTREE_ROOT:?WTBS_WORKTREE_ROOT is not set}"
+
+"$(dirname "${BASH_SOURCE[0]}")/db-drop" "$WTBS_WORKTREE_ROOT/${WTBS_DB_NAME}.sqlite" || true

@@ -2,17 +2,18 @@
 set -euo pipefail
 
 # Run a command inside a worktree with its execution context: the worktree
-# directory as cwd, its .env exported, and its .venv/bin, vendor/bin, and
-# node_modules/.bin prepended to PATH. The command resolves in this order:
+# directory as cwd, its .env exported, active strap dirs plus .venv/bin,
+# vendor/bin, and node_modules/.bin prepended to PATH. The command resolves
+# in this order:
 #
 #   1. a preset script `.wtbs/<name>` (worktree checkout first, then the main
 #      repo) — run with bash, extra args as positional parameters, and the
 #      template context exported as WTBS_* env vars (no template rendering,
 #      so scripts may contain literal { braces);
-#   2. an alias from the project config (`aliases.<name>`) — rendered with the
-#      template context ({ports.serve}, {db_name}, {site}, ...), extra args
-#      appended;
-#   3. a raw command run verbatim (still template-rendered).
+#   2. an alias from the project config (`aliases.<name>`) — rendered with
+#      the template context, extra args appended;
+#   3. a raw command run verbatim (still template-rendered) — this tier is
+#      how strap verbs resolve: executable files in active strap dirs.
 
 # Internal: echo the path of the preset script for a name, if one exists.
 _find_preset() {
@@ -24,27 +25,55 @@ _find_preset() {
     fi
 }
 
-# Internal: export the template context as WTBS_* env vars for preset scripts.
-_export_context_vars() {
-    local -n ctx_ref="$1"
-    export WTBS_BRANCH="${ctx_ref[branch]}"
-    export WTBS_BRANCH_SLUG="${ctx_ref[branch_slug]}"
-    export WTBS_SITE="${ctx_ref[site]}"
-    export WTBS_DB_NAME="${ctx_ref[db_name]}"
-    export WTBS_WORKTREE_ROOT="${ctx_ref[worktree_root]}"
-    export WTBS_MAIN_REPO="${ctx_ref[main_repo]}"
-    local key pname
-    for key in "${!ctx_ref[@]}"; do
-        [[ "$key" == ports.* ]] || continue
-        pname="WTBS_PORT_${key#ports.}"
-        export "${pname^^}=${ctx_ref[$key]}"
+# Internal: prepend the execution PATH entries inside the current shell.
+_exec_path() {
+    local worktree_path="$1" main_root="$2"
+    local strap_path bindir
+    strap_path="$(strap_path_prefix "$worktree_path" "$main_root")"
+    [[ -n "$strap_path" ]] && PATH="$strap_path:$PATH"
+    for bindir in .venv/bin vendor/bin node_modules/.bin; do
+        [[ -d "$bindir" ]] && PATH="$worktree_path/$bindir:$PATH"
     done
+    export PATH
 }
 
-# Internal: list available presets and aliases for a worktree.
+# Internal: list available presets, aliases, and strap verbs for a worktree.
 _list_commands() {
     local ctx_name="$1" worktree_path="$2" main_root="$3"
     local -n list_ctx="$ctx_name"
+
+    local -a straps=()
+    declared_straps straps
+    if [[ ${#straps[@]} -gt 0 ]]; then
+        local s name
+        echo "straps (active):"
+        for s in "${straps[@]}"; do
+            parse_strap_ref "$s"
+            name="$REF_NAME"
+            printf '  %-16s %s\n' "$name" "$(resolve_strap "$name" "$worktree_path" "$main_root")"
+        done
+    fi
+
+    # Strap verbs: executable files in active strap dirs (create/destroy
+    # are lifecycle internals, not verbs).
+    local -A verbs=()
+    local entry name dir f
+    while IFS=$'\t' read -r name dir; do
+        [[ -n "$dir" ]] || continue
+        for f in "$dir"/*; do
+            [[ -f "$f" && -x "$f" ]] || continue
+            case "$(basename "$f")" in
+                create|destroy|lib|strap.yml) continue ;;
+            esac
+            verbs["$(basename "$f")"]="$f"
+        done
+    done < <(resolved_straps "$worktree_path" "$main_root")
+    if [[ ${#verbs[@]} -gt 0 ]]; then
+        echo "verbs (strap scripts):"
+        while IFS= read -r name; do
+            printf '  %-16s %s\n' "$name" "${verbs[$name]}"
+        done < <(printf '%s\n' "${!verbs[@]}" | sort)
+    fi
 
     local -A presets=()
     local dir f
@@ -70,14 +99,14 @@ _list_commands() {
         keys+=("$k")
     done < <(printf '%s\n' "${!CONFIG[@]}" | grep -E '^aliases\.' | sort || true)
     if [[ ${#keys[@]} -gt 0 ]]; then
-        echo "aliases (.worktree-bootstrap.yml):"
+        echo "aliases (.wtbs.yml):"
         for k in "${keys[@]}"; do
             printf '  %-16s %s\n' "${k#aliases.}" "$(render_template "${CONFIG[$k]}" list_ctx)"
         done
     fi
 
-    if [[ ${#presets[@]} -eq 0 && ${#keys[@]} -eq 0 ]]; then
-        echo "no presets (.wtbs/) or aliases (config) defined for this project"
+    if [[ ${#straps[@]} -eq 0 && ${#verbs[@]} -eq 0 && ${#presets[@]} -eq 0 && ${#keys[@]} -eq 0 ]]; then
+        echo "no straps, verbs, presets (.wtbs/), or aliases (config) defined for this project"
     fi
 }
 
@@ -94,40 +123,33 @@ cmd_exec() {
         worktree_path="$(_worktree_path_for_branch "$target")"
         if [[ -z "$worktree_path" ]]; then
             local candidate
-            candidate="$(dirname "$main_root")/$(basename "$main_root")-${target//\//-}"
+            candidate="$(default_worktree_path "$main_root" "$target")"
             [[ -d "$candidate" ]] && worktree_path="$candidate"
         fi
     fi
     [[ -n "$worktree_path" && -d "$worktree_path" ]] || fatal "no worktree found for: $target"
 
-    load_project_config "$main_root"
+    load_project_config "$main_root" "$worktree_path"
 
-    local branch branch_slug site env_file offset="" db_name=""
+    local branch branch_slug site env_file db_name
     branch="$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || branch="unknown"
     branch_slug="$(slugify "$branch")"
     site="$(basename "$worktree_path" | tr '[:upper:]' '[:lower:]')"
     env_file="$worktree_path/.env"
-    if [[ -f "$env_file" ]]; then
-        offset="$(grep -E '^# WORKTREE_BOOTSTRAP=' "$env_file" | head -n1 | sed -E 's/.*:offset:([0-9]+):.*/\1/' || true)"
-        db_name="$(grep -E '^# WORKTREE_BOOTSTRAP=' "$env_file" | head -n1 | sed -E 's/.*:db:(.*)$/\1/' || true)"
-    fi
-    if [[ -z "$db_name" ]]; then
-        db_name="$(get_config database.name_prefix)${branch_slug}"
-    fi
 
-    local -A base_ports ports
-    base_ports[app]="$(get_config ports.base.app)"
-    base_ports[db]="$(get_config ports.base.db)"
-    base_ports[vite]="$(get_config ports.base.vite)"
-    base_ports[serve]="$(get_config ports.base.serve)"
-    base_ports[redis]="$(get_config ports.base.redis)"
-    base_ports[mailhog]="$(get_config ports.base.mailhog)"
-    compute_ports "${offset:-0}" base_ports ports
+    # Branch state comes from the registry (single source of truth), with a
+    # computed fallback for worktrees that were never bootstrapped.
+    local registry_file
+    registry_file="$(registry_path "$main_root")"
+    db_name="$(state_get "$registry_file" "$branch" db)"
+    [[ -z "$db_name" ]] && db_name="$(compute_db_name "$branch" "$branch_slug")"
 
     local -A ctx
-    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root" ports
+    build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root"
+    load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
+    export WTBS_STATE_FILE="$(state_file_path "$main_root" "$branch_slug")"
 
-    # No command: list the presets and aliases available for this worktree.
+    # No command: list what's available for this worktree.
     if [[ $# -eq 0 ]]; then
         echo "worktree: $worktree_path"
         _list_commands ctx "$worktree_path" "$main_root"
@@ -148,13 +170,11 @@ cmd_exec() {
         local status=0
         (
             cd "$worktree_path"
-            local bindir
-            for bindir in .venv/bin vendor/bin node_modules/.bin; do
-                [[ -d "$bindir" ]] && PATH="$worktree_path/$bindir:$PATH"
-            done
-            export PATH
+            _exec_path "$worktree_path" "$main_root"
             export_env_file "$env_file"
-            _export_context_vars ctx
+            export_context_vars ctx
+            export WTBS_LIB_DIR="$LIB_DIR"
+            export_strap_args_env_for "$main_root" "$worktree_path"
             # WARNING: presets are project files executed as-is. Only run this
             # against repositories whose .wtbs/ scripts you trust.
             # Worktree checkouts may carry CRLF line endings (core.autocrlf),
@@ -164,7 +184,8 @@ cmd_exec() {
         return "$status"
     fi
 
-    # Alias match (extra args appended) or raw command pass-through.
+    # Alias match (extra args appended) or raw command pass-through — the
+    # raw tier is also how strap verbs resolve, via PATH.
     local cmd
     local alias_val="${CONFIG["aliases.$1"]:-}"
     if [[ -n "$alias_val" ]]; then
@@ -174,6 +195,7 @@ cmd_exec() {
     else
         cmd="$*"
     fi
+    cmd="$(render_env_refs "$cmd" "$env_file")"
     cmd="$(render_template "$cmd" ctx)"
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -186,12 +208,11 @@ cmd_exec() {
     local status=0
     (
         cd "$worktree_path"
-        local bindir
-        for bindir in .venv/bin vendor/bin node_modules/.bin; do
-            [[ -d "$bindir" ]] && PATH="$worktree_path/$bindir:$PATH"
-        done
-        export PATH
+        _exec_path "$worktree_path" "$main_root"
         export_env_file "$env_file"
+        export_context_vars ctx
+        export WTBS_LIB_DIR="$LIB_DIR"
+        export_strap_args_env_for "$main_root" "$worktree_path"
         # WARNING: alias text comes from the project config and is executed
         # as-is. Only run this against repositories whose config you trust.
         bash -c "$cmd"

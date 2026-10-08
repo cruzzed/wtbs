@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# valet-site secure|unsecure|url <site> — serve this worktree under a valet
+# site name that is SAFE for nginx, truncating only when necessary.
+#
+# valet writes <site>.<tld> plus www. and *. variants into nginx, whose
+# default server_names_hash_bucket_size is 64: an over-long literal server
+# name makes the config test fail and takes down EVERY valet site. Long
+# directory names are fine for git — so when the full name approaches the
+# limit, this script:
+#   - derives a deterministic short name (<segment-truncated>-<sha1-8>)
+#   - maintains a short-named symlink to the worktree (the parked parent
+#     must contain a directory/symlink named after the site for valet)
+#   - secures/unsecures only the short name
+# Short names pass through untouched. The core never learns any of this.
+#
+# The strap's state record — where valet serves THIS worktree — goes to
+# wtbs's own per-branch state file ($WTBS_STATE_FILE): valet deliberately
+# writes nothing to the project's .env (APP_URL belongs to the project —
+# e.g. a static ngrok tunnel). Projects that want the value read it via
+# wtbs_state_get in their env strap; `valet-site url` prints it for humans
+# and scripts.
+set -euo pipefail
+
+cmd="${1:?usage: valet-site secure|unsecure|url <site>}"
+
+tld="test"
+config="${VALET_CONFIG:-$HOME/.config/valet/config.json}"
+if [[ -f "$config" ]]; then
+    # laravel/valet writes "tld"; valet-linux-plus writes "domain".
+    detected="$(grep -oE '"(tld|domain)"[[:space:]]*:[[:space:]]*"[^"]+"' "$config" | head -n1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+    [[ -n "${detected:-}" ]] && tld="$detected"
+fi
+
+resolved=""
+truncated=0
+parent=""
+worktree_root="${WTBS_WORKTREE_ROOT:-}"
+
+real_path() { realpath "$1" 2>/dev/null || echo "$1"; }
+
+# Decide where the short-name symlink must live for valet to see it. valet
+# only scans its parked paths, and the worktree's own parent may not be one
+# (e.g. repos in ~/code reached through ~/sites/<repo> symlinks). Prefer the
+# parked path that serves the MAIN repo (an entry in it resolves to the main
+# repo); otherwise keep the historical worktree-parent behavior.
+link_parent() {
+    local default_parent="$1"
+    [[ -f "$config" ]] || { echo "$default_parent"; return; }
+
+    local -a parked=()
+    mapfile -t parked < <(python3 - "$config" <<'PY'
+import json, os, sys
+try:
+    with open(os.path.expanduser(sys.argv[1])) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+for p in data.get("paths", []) or []:
+    print(os.path.expanduser(p))
+PY
+    )
+    [[ ${#parked[@]} -gt 0 ]] || { echo "$default_parent"; return; }
+
+    local main_real=""
+    if [[ -n "${WTBS_MAIN_REPO:-}" ]]; then
+        main_real="$(real_path "$WTBS_MAIN_REPO")"
+    elif command -v git >/dev/null 2>&1 \
+        && git -C "$worktree_root" rev-parse --git-dir >/dev/null 2>&1; then
+        main_real="$(dirname "$(git -C "$worktree_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
+    fi
+    [[ -n "$main_real" ]] || { echo "$default_parent"; return; }
+
+    local p entry
+    for p in "${parked[@]}"; do
+        [[ -d "$p" ]] || continue
+        for entry in "$p"/*; do
+            [[ -e "$entry" || -L "$entry" ]] || continue
+            if [[ "$(real_path "$entry")" == "$main_real" ]]; then
+                echo "$p"
+                return
+            fi
+        done
+    done
+    echo "$default_parent"
+}
+
+resolve() {
+    local site="$1"
+    site="$(echo "$site" | tr '[:upper:]' '[:lower:]')"
+    resolved="$site"
+    truncated=0
+    if (( 4 + ${#site} + 1 + ${#tld} > 56 )); then
+        truncated=1
+        # Truncate each dash-delimited segment to 4 chars, then append a hash
+        # of the full name so two long names can never collide on the short.
+        local base hash budget
+        base="$(printf %s "$site" \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+            | awk -F- '{ out = ""; for (i = 1; i <= NF; i++) { if ($i != "") { out = out (out == "" ? "" : "-") substr($i, 1, 4) } } print out }')"
+        hash="$(printf %s "$site" | sha1sum | cut -c1-8)"
+        resolved="${base}-${hash}"
+        # Hard cap with margin under nginx's 64-byte bucket.
+        budget=$((60 - 4 - ${#tld} - 9))
+        (( budget < 4 )) && budget=4
+        if (( ${#resolved} > budget + 9 )); then
+            resolved="$(printf %s "$base" | cut -c1-"$budget")-${hash}"
+        fi
+    fi
+}
+
+served_url() { echo "https://${resolved}.${tld}"; }
+
+case "$cmd" in
+    secure|unsecure)
+        site="${2:?usage: valet-site $cmd <site>}"
+        resolve "$site"
+        parent="$(dirname "${worktree_root:?WTBS_WORKTREE_ROOT is not set}")"
+        if [[ "$cmd" == "secure" ]]; then
+            if [[ $truncated -eq 1 ]]; then
+                echo "valet-site: '$site' is too long for nginx's server_names_hash_bucket_size (64); serving as '$resolved' instead ($(served_url))" >&2
+                link_root="$(link_parent "$parent")"
+                if [[ "$link_root" != "$parent" ]]; then
+                    echo "valet-site: parked via $link_root (symlink placed there, not in the worktree parent)" >&2
+                fi
+                ln -sfn "$worktree_root" "$link_root/$resolved"
+            fi
+            command -v valet >/dev/null && valet secure "$resolved" || true
+            # Record the served URL in wtbs's per-branch state file.
+            if [[ -n "${WTBS_STATE_FILE:-}" ]]; then
+                mkdir -p "$(dirname "$WTBS_STATE_FILE")"
+                touch "$WTBS_STATE_FILE"
+                grep -vE '^valet\.url:' "$WTBS_STATE_FILE" > "$WTBS_STATE_FILE.tmp" 2>/dev/null || true
+                echo "valet.url: $(served_url)" >> "$WTBS_STATE_FILE.tmp"
+                mv "$WTBS_STATE_FILE.tmp" "$WTBS_STATE_FILE"
+            fi
+        else
+            if command -v valet >/dev/null; then
+                valet unsecure "$resolved" || true
+            fi
+            if [[ $truncated -eq 1 ]]; then
+                # Remove the symlink wherever it may live: the resolved
+                # parked parent, or the worktree parent (older runs and
+                # hand-moved links).
+                rm -f "$(link_parent "$parent")/$resolved"
+                rm -f "$parent/$resolved"
+            fi
+        fi
+        ;;
+    url)
+        site="${2:?usage: valet-site url <site>}"
+        resolve "$site"
+        served_url
+        ;;
+    *)
+        echo "usage: valet-site secure|unsecure|url <site>" >&2
+        exit 2
+        ;;
+esac

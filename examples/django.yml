@@ -1,31 +1,22 @@
-name: Django Project
-copy_from_main:
-  - .env
+# Django + uv, served on a per-worktree port via the auto-ports strap.
+# The service set is declared at activation; the strap allocates one offset
+# per branch and publishes concrete ports as {auto_ports.<name>} tokens.
 
-env_updates:
-  APP_PORT: "{ports.app}"
+straps: ["auto-ports(serve:8000)"]
 
-database:
-  driver: sqlite
-  source_env_key: DB_DATABASE
-  sqlite_source_path: db.sqlite3
+copy:
+  ignore: [.venv, node_modules, staticfiles]
 
-ports:
-  base:
-    app: 8080
-    db: 33060
-    vite: 5173
-    serve: 8000
+# Project-specific .env writes (e.g. SERVE_PORT, DATABASE_URL for a
+# cloud/branching DB) belong to the project env strap — see
+# .wtbs/straps/env/ after first activation (docs/adr/0007).
 
-commands:
-  install:
-    - pip install -r requirements.txt
-  build:
-    - python manage.py migrate
-  serve:
-    - "python manage.py runserver {ports.app}"
+hooks:
+  create:
+    - uv sync
+    - uv run python manage.py migrate
 
 aliases:
-  runserver: "python manage.py runserver {ports.serve}"
-  test: "python manage.py test"
-  shell: "python manage.py shell"
+  serve: "uv run python manage.py runserver {auto_ports.serve}"
+  test: "uv run pytest"
+  shell: "uv run python manage.py shell"

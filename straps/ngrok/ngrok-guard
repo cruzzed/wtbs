@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Steal guard for the shared ngrok URL. Called by ngrok-share before any
+# handoff; exit 0 permits, exit 1 rejects.
+#
+# Posture:
+#   - the singleton is registered to exactly one site by default: the main
+#     repo ("main"). Any share from another checkout is a STEAL and fails.
+#   - register more sites in the wtbs user settings to allow handoffs
+#     between them (~/.config/wtbs/settings.yml):
+#       ngrok:
+#         sites: "main,myapp-feat-x"
+#     Site names are the lowercased directory basenames ({site}); "main" is
+#     the main repo.
+#   - a CUSTOMIZED strap (running from a project's .wtbs/straps/) owns its
+#     own policy: the guard permits everything. Take ownership with:
+#       wtbs strap customize ngrok
+#
+# This is footgun protection, not security: a worktree could edit its own
+# copy of .env. The point is that taking the shared URL is always a
+# deliberate act, never an accident.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$self_dir" in
+    "${WTBS_MAIN_REPO:-}"/.wtbs/straps/*|"${WTBS_WORKTREE_ROOT:-}"/.wtbs/straps/*)
+        # Customized strap: the project owns the policy.
+        exit 0 ;;
+esac
+
+current_site="main"
+if [[ "${WTBS_WORKTREE_ROOT:-}" != "${WTBS_MAIN_REPO:-}" ]]; then
+    current_site="${WTBS_SITE:?WTBS_SITE is not set}"
+fi
+
+# Project-level policy (a customized strap.yml next to this script) wins
+# over the user settings env (NGROK_SITES from ~/.config/wtbs/settings.yml).
+policy_sites="$(grep -E '^sites:' "$(dirname "${BASH_SOURCE[0]}")/strap.yml" 2>/dev/null | head -n1 | sed -E 's/^sites:[[:space:]]*//' | xargs || true)"
+sites="${policy_sites:-${NGROK_SITES:-main}}"
+sites="${sites//,/ }"
+for s in $sites; do
+    [[ "$s" == "$current_site" ]] && exit 0
+done
+
+echo "ngrok-share: refusing to hand https://${NGROK_SHARED_URL:-<unset>} to '$current_site'" >&2
+echo "  the shared URL is registered to: ${sites}" >&2
+echo "  to allow this checkout, register it in ~/.config/wtbs/settings.yml:" >&2
+if [[ "$current_site" != "main" ]]; then
+    echo "    ngrok:" >&2
+    echo "      sites: \"main,${current_site}\"" >&2
+fi
+echo "  or take ownership of the strap: wtbs strap customize ngrok" >&2
+exit 1

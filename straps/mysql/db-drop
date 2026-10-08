@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Drop a MySQL database. Missing databases are not an error.
+set -euo pipefail
+
+target="${1:?usage: db-drop <target-db>}"
+
+host="${DB_HOST:-127.0.0.1}"
+port="${DB_PORT:-3306}"
+user="${DB_USERNAME:-root}"
+export MYSQL_PWD="${DB_PASSWORD:-}"
+
+quote_id() { printf '`%s`' "${1//\`/\`\`}"; }
+
+echo "DROP DATABASE IF EXISTS $(quote_id "$target");" \
+    | mysql --host="$host" --port="$port" --user="$user"
+echo "db-drop: dropped $target"

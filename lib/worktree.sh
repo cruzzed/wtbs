@@ -28,6 +28,15 @@ list_worktrees() {
     git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}'
 }
 
+# Default worktree path for a branch: a sibling directory of the main repo
+# named <repo>-<branch>, with slashes in the branch name becoming dashes so
+# the path stays a single directory. Names stay natural/full-length; the
+# valet strap's valet-check-name warns when a name would break nginx.
+default_worktree_path() {
+    local main_root="$1" branch="$2"
+    echo "$(dirname "$main_root")/$(basename "$main_root")-${branch//\//-}"
+}
+
 # Create a worktree for a branch at a path. If the branch does not exist yet,
 # create it from the optional base ref (defaults to HEAD).
 create_worktree() {
@@ -102,4 +111,46 @@ destroy_worktree() {
     fi
     [[ -n "$path" ]] || fatal "no worktree found for: $branch_or_path"
     remove_worktree "$path" "$dry_run"
+}
+
+# ── Residue copy (docs/adr/0008) ────────────────────────────────────────────
+# git worktree add checks out tracked files; the copy noun mirrors the
+# untracked residue (including gitignored files like .env) from the main
+# repo into the worktree, minus the ignore list. Git's own machinery
+# decides what is residue — the core invents no file-walking logic.
+# .git and .wtbs/ are always skipped: mechanism, not policy.
+
+# Echo the residue file list, one per line, excluding the given ignore
+# patterns (gitignore-style, matched by git pathspec) and the built-ins.
+residue_list() {
+    local main_root="$1"
+    shift
+    local -a excludes=()
+    local p
+    for p in "$@"; do
+        [[ -n "$p" ]] && excludes+=(":(exclude)$p")
+    done
+    git -C "$main_root" ls-files --others -- . \
+        ":(exclude).git" ":(exclude).wtbs" ${excludes[@]+"${excludes[@]}"}
+}
+
+# Seed missing residue files into the worktree. Seed-only: a file already
+# present is never overwritten (copy runs before strap lifecycles, which
+# own the file afterwards). Prints "copied=<n> skipped=<n>".
+copy_residue() {
+    local main_root="$1" worktree_root="$2"
+    shift 2
+    local -a files=()
+    mapfile -t files < <(residue_list "$main_root" "$@")
+    local f copied=0 skipped=0
+    for f in "${files[@]}"; do
+        if [[ -e "$worktree_root/$f" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        mkdir -p "$worktree_root/$(dirname "$f")"
+        cp "$main_root/$f" "$worktree_root/$f"
+        copied=$((copied + 1))
+    done
+    echo "copied=$copied skipped=$skipped"
 }

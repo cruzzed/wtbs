@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# auto-ports destroy lifecycle: release this branch's offset. The published
+# state keys disappear with the state file (removed by the core).
+set -euo pipefail
+
+: "${WTBS_BRANCH:?WTBS_BRANCH is not set — lifecycle scripts run inside wtbs}"
+: "${WTBS_MAIN_REPO:?WTBS_MAIN_REPO is not set}"
+
+strap_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib
+source "$strap_dir/lib"
+
+release_offset "$(auto_ports_registry "$WTBS_MAIN_REPO")" "$WTBS_BRANCH"
+echo "auto-ports: released offset for $WTBS_BRANCH"

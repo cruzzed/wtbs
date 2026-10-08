@@ -1,46 +1,28 @@
-name: Laravel Project
-copy_from_main:
-  - .env
+# Laravel + MySQL + Valet, expressed as straps.
+# Sites are served by Valet (park the parent directory of your worktrees)
+# at https://{site}.<valet-tld> — no app port is needed. valet secure/
+# unsecure restart nginx internally, so the sudo password may be prompted
+# for during create/destroy.
 
-env_updates:
-  APP_URL: "https://{site}.test"
-  APP_PORT: "{ports.app}"
-  FORWARD_DB_PORT: "{ports.db}"
-  VITE_PORT: "{ports.vite}"
+straps: [valet, mysql]
 
-database:
-  driver: mysql
-  name_prefix: myapp_
-  source_env_key: DB_DATABASE
-  host_env_key: DB_HOST
-  port_env_key: DB_PORT
-  user_env_key: DB_USERNAME
-  pass_env_key: DB_PASSWORD
+# Untracked files (.env, auth.json, ...) mirror from the main repo
+# automatically (docs/adr/0008); exclude the heavy ones. The mysql strap
+# writes DB_DATABASE into the worktree .env itself.
 
-ports:
-  base:
-    app: 8080
-    db: 33060
-    vite: 5173
-    serve: 8000
-    redis: 6379
-    mailhog: 1025
+copy:
+  ignore: [node_modules, vendor]
 
-# Sites are served by Valet (park the parent directory of your worktrees):
-# https://{site}.test
-# valet secure/unsecure restarts nginx internally, so the sudo password may
-# be prompted for during create/destroy.
-commands:
-  install:
+db_name: "myapp_{branch_slug}"
+
+hooks:
+  create:
     - composer install
     - npm ci
-  build:
     - npm run build
-    - "command -v valet >/dev/null && valet secure \"{site}\" || true"
-  destroy:
-    - "command -v valet >/dev/null && valet unsecure \"{site}\" || true"
 
 aliases:
+  serve: "php artisan serve"
   tinker: "php artisan tinker"
   migrate: "php artisan migrate"
   test: "php artisan test"
