@@ -23,6 +23,18 @@ set -euo pipefail
 
 cmd="${1:?usage: valet-site secure|unsecure|url <site>}"
 
+# Remove a single file/symlink, failing closed on empty, /, $HOME, or a
+# directory — the same discipline as the core's wtbs_remove_file guard.
+# A symlink TO a directory is still just a link: -L exempts it from the
+# directory refusal (rm -f unlinks it, never reaches the target).
+remove_link() {
+    local path="$1"
+    [[ -n "$path" && "$path" != "/" && -n "${HOME:-}" && "$path" != "$HOME" ]] \
+        || { echo "FATAL: refusing unsafe removal: '$path'" >&2; exit 1; }
+    [[ ! -d "$path" || -L "$path" ]] || { echo "FATAL: refusing to remove directory: $path" >&2; exit 1; }
+    rm -f -- "$path"
+}
+
 tld="test"
 config="${VALET_CONFIG:-$HOME/.config/valet/config.json}"
 if [[ -f "$config" ]]; then
@@ -124,6 +136,7 @@ case "$cmd" in
                 fi
                 ln -sfn "$worktree_root" "$link_root/$resolved"
             fi
+            # shellcheck disable=SC2015  # intentional: best-effort secure, tolerate failure
             command -v valet >/dev/null && valet secure "$resolved" || true
             # Record the served URL in wtbs's per-branch state file.
             if [[ -n "${WTBS_STATE_FILE:-}" ]]; then
@@ -141,8 +154,8 @@ case "$cmd" in
                 # Remove the symlink wherever it may live: the resolved
                 # parked parent, or the worktree parent (older runs and
                 # hand-moved links).
-                rm -f "$(link_parent "$parent")/$resolved"
-                rm -f "$parent/$resolved"
+                remove_link "$(link_parent "$parent")/$resolved"
+                remove_link "$parent/$resolved"
             fi
         fi
         ;;

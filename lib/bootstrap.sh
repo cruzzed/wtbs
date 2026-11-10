@@ -59,7 +59,7 @@ build_context() {
     ctx_out[site]="$site"
     ctx_out[db_name]="$db_name"
     ctx_out[worktree_root]="$worktree_root"
-    ctx_out[main_repo]="$main_root"
+    ctx_out["main_repo"]="$main_root"
 }
 
 # Export the template context as WTBS_* env vars: every context key becomes
@@ -114,6 +114,15 @@ run_hooks() {
                 export WTBS_LIB_DIR="$LIB_DIR"
                 export_user_settings
                 export_strap_args ${refs[@]+"${refs[@]}"}
+                # Refuse dangerous hook scripts at execution time too — the
+                # worktree may have changed since create-time preflight.
+                local hook_token="${rendered_cmd%%[[:space:]]*}"
+                local hook_resolved=""
+                hook_resolved="$(command -v -- "$hook_token" 2>/dev/null)" || hook_resolved=""
+                if [[ "$hook_resolved" == */* && -f "$hook_resolved" ]]; then
+                    danger_scan "$hook_resolved" \
+                        || fatal "hook '$hook_token' failed the danger scan; fix the script or mark the line '# wtbs:danger-ok <reason>'"
+                fi
                 # WARNING: hooks come from the project config and are
                 # executed as-is. Only run this tool against repositories
                 # whose bootstrap config you trust.
@@ -124,10 +133,11 @@ run_hooks() {
 }
 
 # Fail fast when hook scripts referenced in hooks.* are missing from the
-# checkout. Only tokens that look like paths (contain a "/") are checked;
-# plain command names are assumed to resolve via PATH (e.g. strap scripts).
-# Mode "fail" aborts; mode "warn" only prints (create --dry-run, where the
-# worktree does not exist yet).
+# checkout or contain dangerous patterns. Only tokens that look like paths
+# (contain a "/") are checked; plain command names are assumed to resolve via
+# PATH (e.g. strap scripts). Mode "fail" aborts; mode "warn" only prints
+# (create --dry-run, where the worktree does not exist yet). Dangerous
+# patterns are always fatal, in both modes.
 preflight_hook_scripts() {
     local ctx_name="$1" check_root="$2" mode="$3"
 
@@ -139,18 +149,42 @@ preflight_hook_scripts() {
     entries+=(${step_cmds[@]+"${step_cmds[@]}"})
 
     local -a missing=()
-    local entry rendered token path
+    local entry rendered token path scan_path
+    local -n hook_ctx="$ctx_name"
+    local -a strap_dirs=()
+    local strap_prefix
+    strap_prefix="$(strap_path_prefix "${hook_ctx[worktree_root]:-}" "${hook_ctx[main_repo]:-}" 2>/dev/null)" || strap_prefix=""
+    IFS=':' read -r -a strap_dirs <<< "${strap_prefix:-}" || true
     for entry in ${entries[@]+"${entries[@]}"}; do
         [[ -z "$entry" ]] && continue
         rendered="$(render_template "$entry" "$ctx_name")"
         token="${rendered%%[[:space:]]*}"
-        [[ "$token" == */* ]] || continue
-        if [[ "$token" == /* ]]; then
-            path="$token"
+        scan_path=""
+        if [[ "$token" == */* ]]; then
+            if [[ "$token" == /* ]]; then
+                path="$token"
+            else
+                path="$check_root/$token"
+            fi
+            [[ -e "$path" ]] || missing+=("$token")
+            [[ -f "$path" ]] && scan_path="$path"
         else
-            path="$check_root/$token"
+            # Plain command name: resolve against strap dirs the way run_hooks
+            # puts them on PATH, then the ambient PATH.
+            local sdir
+            for sdir in ${strap_dirs[@]+"${strap_dirs[@]}"}; do
+                if [[ -f "$sdir/$token" ]]; then
+                    scan_path="$sdir/$token"
+                    break
+                fi
+            done
+            if [[ -z "$scan_path" ]]; then
+                scan_path="$(command -v "$token" 2>/dev/null)" || scan_path=""
+            fi
         fi
-        [[ -e "$path" ]] || missing+=("$token")
+        if [[ -n "$scan_path" ]]; then
+            danger_scan "$scan_path" || fatal "hook '$token' failed the danger scan; fix the script or mark the line '# wtbs:danger-ok <reason>'"
+        fi
     done
 
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -353,13 +387,16 @@ cmd_destroy() {
     fi
 
     state_delete "$registry_file" "$branch"
-    rm -f "$(state_file_path "$main_root" "$branch_slug")"
+    wtbs_remove_file "$(state_file_path "$main_root" "$branch_slug")"
     rmdir "$main_root/.wtbs/worktrees" 2>/dev/null || true
     remove_worktree "$worktree_path"
     # Prune immediately so the branch is deletable right away.
     git -C "$main_root" worktree prune
     if [[ $DELETE_BRANCH -eq 1 && "$branch" != "unknown" ]]; then
-        git -C "$main_root" branch -D "$branch" 2>/dev/null \
-            || warn "could not delete branch $branch (checked out elsewhere?)"
+        if wtbs_remove_branch "$main_root" "$branch"; then
+            :
+        else
+            warn "could not delete branch $branch (checked out elsewhere?)"
+        fi
     fi
 }

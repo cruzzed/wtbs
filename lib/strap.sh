@@ -141,6 +141,8 @@ _run_strap_script() {
         echo "[dry-run] would run strap '$name' $(basename "$script"): $script"
         return 0
     fi
+    danger_scan "$script" \
+        || fatal "strap '$name' $(basename "$script") failed the danger scan; fix the script or mark the line '# wtbs:danger-ok <reason>'"
     info "running strap '$name' $(basename "$script"): $script"
     (
         cd "${rss_ctx[worktree_root]}"

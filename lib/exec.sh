@@ -147,7 +147,9 @@ cmd_exec() {
     local -A ctx
     build_context ctx "$branch" "$branch_slug" "$site" "$db_name" "$worktree_path" "$main_root"
     load_state_into_ctx "$(state_file_path "$main_root" "$branch_slug")" ctx
-    export WTBS_STATE_FILE="$(state_file_path "$main_root" "$branch_slug")"
+    local wtbs_state_file
+    wtbs_state_file="$(state_file_path "$main_root" "$branch_slug")"
+    export WTBS_STATE_FILE="$wtbs_state_file"
 
     # No command: list what's available for this worktree.
     if [[ $# -eq 0 ]]; then
@@ -168,6 +170,8 @@ cmd_exec() {
             return 0
         fi
         local status=0
+        danger_scan "$preset" \
+            || fatal "preset '$preset' failed the danger scan; fix the script or mark the line '# wtbs:danger-ok <reason>'"
         (
             cd "$worktree_path"
             _exec_path "$worktree_path" "$main_root"
@@ -206,6 +210,20 @@ cmd_exec() {
     fi
 
     local status=0
+    # Danger-scan the command's first token if it resolves to a script file
+    # (strap verb on PATH, path-like command), the same way preflight scans hooks.
+    local first_token scan_target
+    first_token="${cmd%%[[:space:]]*}"
+    scan_target=""
+    if [[ "$first_token" == */* ]]; then
+        scan_target="$(cd "$worktree_path" && [[ -f "$first_token" ]] && echo "$PWD/$first_token")" || scan_target=""
+    else
+        scan_target="$({ cd "$worktree_path" && _exec_path "$worktree_path" "$main_root" && command -v -- "$first_token"; } 2>/dev/null)" || scan_target=""
+    fi
+    if [[ -n "$scan_target" && "$scan_target" == */* && -f "$scan_target" ]]; then
+        danger_scan "$scan_target" \
+            || fatal "command '$first_token' failed the danger scan; fix the script or mark the line '# wtbs:danger-ok <reason>'"
+    fi
     (
         cd "$worktree_path"
         _exec_path "$worktree_path" "$main_root"

@@ -5,6 +5,8 @@ set -euo pipefail
 
 target="${1:?usage: db-clone <target-db> [--force]}"
 source_db="${DB_DATABASE:?DB_DATABASE is not set — hooks should export the main repo .env}"
+[[ "$target" =~ ^[A-Za-z0-9_-]+$ && "$source_db" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || { echo "FATAL: refusing db-clone on suspicious database name" >&2; exit 1; }
 maintenance_db="${PG_MAINTENANCE_DB:-postgres}"
 
 host="${DB_HOST:-127.0.0.1}"

@@ -82,7 +82,7 @@ _worktree_path_for_branch() {
 _safe_remove_path() {
     local path="$1"
     if _is_worktree_path "$path" || git worktree list --porcelain 2>/dev/null | grep -qx "worktree $path"; then
-        rm -rf "$path"
+        wtbs_remove_tree "$path"
     else
         fatal "refusing unsafe removal of non-worktree path: $path"
     fi

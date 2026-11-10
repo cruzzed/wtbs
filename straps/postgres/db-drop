@@ -3,6 +3,8 @@
 set -euo pipefail
 
 target="${1:?usage: db-drop <target-db>}"
+[[ "$target" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || { echo "FATAL: refusing db-drop on suspicious database name: '$target'" >&2; exit 1; }
 maintenance_db="${PG_MAINTENANCE_DB:-postgres}"
 
 host="${DB_HOST:-127.0.0.1}"

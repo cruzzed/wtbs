@@ -488,3 +488,70 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"$(basename "$TMP_ORIGIN")-feature-shopify-oauth-space-selector"* ]]
 }
+
+@test "create refuses a destroy hook that fails the danger scan" {
+    mkdir -p scripts
+    cat > scripts/teardown.sh <<'SCRIPT'
+#!/usr/bin/env bash
+rm -rf "$SOMEWHERE"
+SCRIPT
+    chmod +x scripts/teardown.sh
+    cat > .wtbs.yml <<'YML'
+hooks:
+  destroy:
+    - "scripts/teardown.sh"
+YML
+    git add -A
+    git commit -q -m "dangerous teardown hook"
+
+    run "$SCRIPT" create feature/danger-hook --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"danger scan"* ]]
+    # Refused before any worktree was created.
+    [[ ! -d "$(dirname "$TMP_ORIGIN")/$(basename "$TMP_ORIGIN")-feature-danger-hook" ]]
+}
+
+@test "create accepts a destroy hook marked wtbs:danger-ok" {
+    mkdir -p scripts
+    cat > scripts/teardown.sh <<'SCRIPT'
+#!/usr/bin/env bash
+rm -rf /tmp/known-scratch  # wtbs:danger-ok removes only our own scratch dir
+SCRIPT
+    chmod +x scripts/teardown.sh
+    cat > .wtbs.yml <<'YML'
+hooks:
+  destroy:
+    - "scripts/teardown.sh"
+YML
+    git add -A
+    git commit -q -m "opted-out teardown hook"
+
+    run "$SCRIPT" create feature/opted-hook --dry-run
+    [ "$status" -eq 0 ]
+}
+
+@test "exec refuses a strap verb that fails the danger scan" {
+    git branch feature/danger-verb
+    mkdir -p .wtbs/straps/badstrap
+    cat > .wtbs/straps/badstrap/strap.yml <<'YML'
+straps: []
+YML
+    cat > .wtbs/straps/badstrap/evil <<'SCRIPT'
+#!/usr/bin/env bash
+rm -rf "$ANYTHING"
+SCRIPT
+    chmod +x .wtbs/straps/badstrap/evil
+    cat > .wtbs.yml <<'YML'
+straps: [badstrap]
+YML
+    git add -A
+    git commit -q -m "dangerous strap verb"
+
+    run "$SCRIPT" create feature/danger-verb
+    [ "$status" -eq 0 ]
+    run "$SCRIPT" feature/danger-verb evil
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"danger scan"* ]]
+    run "$SCRIPT" destroy feature/danger-verb
+    [ "$status" -eq 0 ]
+}
