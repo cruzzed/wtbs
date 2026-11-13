@@ -111,17 +111,24 @@ _DANGER_PATTERNS=(
 # Scan a script for dangerous patterns. Follows same-dir sources one level.
 # Returns 0 when clean; prints FATAL diagnostics and returns 1 on a hit.
 danger_scan() {
-    local file="$1" depth="${2:-0}"
+    local file="$1" depth="${2:-}"
     [[ -f "$file" ]] || return 0
     if [[ "${WTBS_ALLOW_DANGEROUS:-}" == "1" ]]; then
         warn "WTBS_ALLOW_DANGEROUS=1: skipping danger scan of $file"
         return 0
     fi
     local script_dir line lineno entry name regex src_arg src_path src_dir
+    local heredoc_end=""
     script_dir="$(cd "$(dirname "$file")" && pwd)"
     lineno=0
     while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$((lineno + 1))
+        # Inside a heredoc body: prose/usage examples, not executed commands.
+        # (The heredoc start line itself was still pattern-checked above.)
+        if [[ -n "$heredoc_end" ]]; then
+            [[ "${line#"${line%%[![:space:]]*}"}" == "$heredoc_end" ]] && heredoc_end=""
+            continue
+        fi
         # Comments are exempt — they often document dangerous examples.
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         # Per-line opt-out directive.
@@ -130,12 +137,24 @@ danger_scan() {
             name="${entry%%:*}"
             regex="${entry#*:}"
             if [[ "$line" =~ $regex ]]; then
-                printf 'FATAL: dangerous pattern %s in %s:%d:\n  %s\n' \
-                    "$name" "$file" "$lineno" "$line" >&2
-                printf 'FATAL: rewrite using the wtbs guard helpers, or mark the line '"'"'# wtbs:danger-ok <reason>'"'"' (or WTBS_ALLOW_DANGEROUS=1 to skip all scans)\n' >&2
+                # Quote the offending line verbatim — the user must be able
+                # to see exactly what was considered dangerous.
+                printf 'FATAL: wtbs danger scan refused to run: %s\n' "$file" >&2
+                printf '  pattern : %s\n' "$name" >&2
+                printf '  at      : %s:%d\n' "$file" "$lineno" >&2
+                printf '  command : %s\n' "$line" >&2
+                printf '  fix     : rewrite using the wtbs guard helpers, or mark the line\n' >&2
+                printf "            '# wtbs:danger-ok <reason>' (or WTBS_ALLOW_DANGEROUS=1 to skip all scans)\n" >&2
                 return 1
             fi
         done
+        # Track heredoc openings (<<WORD, <<-WORD, quoted delimiters) so their
+        # bodies are skipped on subsequent lines. Variable-held regex: bash's
+        # [[ ]] lexer treats a literal < as an operator even inside =~.
+        local heredoc_re='<<-?[[:space:]]*['"'"'"]?([A-Za-z_][A-Za-z0-9_]*)['"'"'"]?'
+        if [[ "$line" =~ $heredoc_re ]]; then
+            heredoc_end="${BASH_REMATCH[1]}"
+        fi
         # Follow one level of same-dir sources (depth 0 only).
         if [[ "$depth" -eq 0 && "$line" =~ ^[[:space:]]*(source|[.])[[:space:]]+([^[:space:]#]+) ]]; then
             src_arg="${BASH_REMATCH[2]}"
@@ -149,7 +168,7 @@ danger_scan() {
             src_dir="$(cd "$(dirname "$src_path")" 2>/dev/null && pwd)" || continue
             # Only files inside the scanned script's own directory are followed.
             [[ "$src_dir" == "$script_dir" && -f "$src_path" ]] || continue
-            danger_scan "$src_path" $((depth + 1)) || return 1
+            danger_scan "$src_path" 1 || return 1
         fi
     done < "$file"
 }
