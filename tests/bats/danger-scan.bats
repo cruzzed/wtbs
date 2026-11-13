@@ -87,6 +87,52 @@ EOF
     danger_scan "$TMP_SCAN/commented.sh"
 }
 
+@test "danger_scan skips heredoc bodies (usage prose is not a command)" {
+    write_script heredoc.sh <<'CASE1'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ! -t 0 ]]; then
+    cat >&2 <<'USAGE'
+This script refuses to run non-interactively.
+Run these manually instead:
+
+    sudo valet unsecure $site
+    rm -rf /tmp/known-scratch
+USAGE
+    exit 1
+fi
+echo "interactive path only"
+CASE1
+    danger_scan "$TMP_SCAN/heredoc.sh"
+    # ...but a real sudo on an executable line is still caught.
+    write_script heredoc2.sh <<'CASE2'
+#!/usr/bin/env bash
+cat <<'USAGE'
+usage text
+USAGE
+sudo valet unsecure "$site"
+CASE2
+    run danger_scan "$TMP_SCAN/heredoc2.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"sudo"* ]]
+}
+
+@test "danger_scan refusal quotes the offending line and locates it" {
+    write_script bad2.sh <<'EOF'
+#!/usr/bin/env bash
+echo ok
+target="/some/path"
+rm -rf "$target"
+EOF
+    run danger_scan "$TMP_SCAN/bad2.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"pattern : recursive-delete"* ]]
+    [[ "$output" == *"bad2.sh:4"* ]]
+    # The exact dangerous command is printed verbatim, quoted under 'command :'.
+    [[ "$output" == *"command : rm -rf \"\$target\""* ]]
+    [[ "$output" == *"wtbs:danger-ok"* ]]
+}
+
 @test "danger_scan honors the wtbs:danger-ok directive per line" {
     write_script opted.sh <<'EOF'
 #!/usr/bin/env bash
