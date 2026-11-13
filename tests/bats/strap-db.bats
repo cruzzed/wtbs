@@ -518,3 +518,101 @@ EOF
     run "$custom/ngrok-guard"
     [ "$status" -eq 0 ]
 }
+
+# ── ngrok share respawn (ngrok v3) ─────────────────────────────────────────
+
+# Fake the process-table tools so no real signal ever leaves the sandbox:
+# pkill/pgrep/fuser/sleep become no-ops, valet presence is controlled per
+# test, and ngrok/setsid record their argv for assertion.
+fake_ngrok_tools() {
+    cat > "$TMP_BIN/pkill" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+    cat > "$TMP_BIN/pgrep" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+    cat > "$TMP_BIN/fuser" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+    cat > "$TMP_BIN/sleep" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+    cat > "$TMP_BIN/setsid" <<'FAKE'
+#!/usr/bin/env bash
+echo "setsid $*" >> "$TMP_TEST_DIR/setsid.log"
+exec "$@"
+FAKE
+    cat > "$TMP_BIN/ngrok" <<'FAKE'
+#!/usr/bin/env bash
+echo "ngrok $*" >> "$TMP_TEST_DIR/ngrok.log"
+FAKE
+    chmod +x "$TMP_BIN/pkill" "$TMP_BIN/pgrep" "$TMP_BIN/fuser" \
+        "$TMP_BIN/sleep" "$TMP_BIN/setsid" "$TMP_BIN/ngrok"
+}
+
+wait_for_log() {
+    local file="$1"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -s "$file" ]] && return 0
+        sleep 0.1 2>/dev/null || true
+    done
+    return 1
+}
+
+@test "ngrok share valet mode: ngrok v3 command shape (closes #21)" {
+    fake_ngrok_tools
+    cat > "$TMP_BIN/valet" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+    chmod +x "$TMP_BIN/valet"
+    export NGROK_SHARED_URL=x.ngrok.dev NGROK_SITES="main,wt"
+    export PATH="$STRAPS/ngrok:$TMP_BIN:$PATH"
+    run "$STRAPS/ngrok/share"
+    [ "$status" -eq 0 ]
+    wait_for_log "$TMP_TEST_DIR/ngrok.log"
+    # ngrok v3 accepts exactly one positional arg (the port); the valet site
+    # rides in --host-header, not as a second positional.
+    grep -qx "ngrok http --url=x.ngrok.dev --host-header=wt.test 80" "$TMP_TEST_DIR/ngrok.log"
+    [[ "$output" == *"https://x.ngrok.dev -> wt.test (valet)"* ]]
+}
+
+@test "ngrok share detaches the tunnel and serve preset via setsid (closes #21)" {
+    fake_ngrok_tools
+    export NGROK_SHARED_URL=x.ngrok.dev NGROK_SITES="main,wt"
+    # Port mode: hide the real valet (it is on PATH on this machine) behind
+    # a minimal PATH, and give the worktree a serve preset.
+    mkdir -p "$WTBS_WORKTREE_ROOT/.wtbs"
+    printf '#!/usr/bin/env bash\necho serve-preset-ran\n' > "$WTBS_WORKTREE_ROOT/.wtbs/serve"
+    run env PATH="$STRAPS/ngrok:$TMP_BIN:/usr/bin:/bin" "$STRAPS/ngrok/share"
+    [ "$status" -eq 0 ]
+    wait_for_log "$TMP_TEST_DIR/setsid.log"
+    [[ "$output" == *"-> localhost:8787"* ]]
+    # The tunnel and the serve preset both spawn through setsid (their own
+    # session), so a caller killing the command's process group can't take
+    # the tunnel down.
+    grep -q "setsid nohup ngrok http --url=x.ngrok.dev 8787" "$TMP_TEST_DIR/setsid.log"
+    grep -q "setsid nohup bash" "$TMP_TEST_DIR/setsid.log"
+}
+
+@test "ngrok share prefers WTBS_VALET_URL (short valet name) for the host header (closes #21)" {
+    fake_ngrok_tools
+    cat > "$TMP_BIN/valet" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+    chmod +x "$TMP_BIN/valet"
+    export NGROK_SHARED_URL=x.ngrok.dev NGROK_SITES="main,wt"
+    # The valet strap publishes the real served URL as valet.url state.
+    export WTBS_VALET_URL="https://myap-feat-x-c98ea2c1.test"
+    export PATH="$STRAPS/ngrok:$TMP_BIN:$PATH"
+    run "$STRAPS/ngrok/share"
+    [ "$status" -eq 0 ]
+    wait_for_log "$TMP_TEST_DIR/ngrok.log"
+    grep -qx "ngrok http --url=x.ngrok.dev --host-header=myap-feat-x-c98ea2c1.test 80" "$TMP_TEST_DIR/ngrok.log"
+    [[ "$output" == *"-> myap-feat-x-c98ea2c1.test (valet)"* ]]
+}

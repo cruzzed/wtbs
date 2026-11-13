@@ -174,3 +174,39 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"served at https://short.develop"* ]]
 }
+
+@test "exec exports per-user settings to strap verbs (issue #20)" {
+    cat > .wtbs.yml <<'EOF'
+straps: [toolstrap]
+EOF
+    local settings
+    settings="$(mktemp)"
+    printf 'ngrok:\n  shared_url: shared-example.ngrok.dev\n' > "$settings"
+    # Strap resolution is worktree-first: the probe must exist in the tier
+    # that resolves (the worktree checkout shadows the main repo's copy).
+    cat > "$WT/.wtbs/straps/toolstrap/settings-probe" <<'PROBE'
+#!/usr/bin/env bash
+echo "shared=${NGROK_SHARED_URL:-unset}"
+PROBE
+    chmod +x "$WT/.wtbs/straps/toolstrap/settings-probe"
+    run env WTBS_SETTINGS_FILE="$settings" "$SCRIPT" exec feature/exec settings-probe
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"shared=shared-example.ngrok.dev"* ]]
+    rm -f "$settings"
+}
+
+@test "exec exports nothing when there is no settings file" {
+    cat > .wtbs.yml <<'EOF'
+straps: [toolstrap]
+EOF
+    # Strap resolution is worktree-first: the probe must exist in the tier
+    # that resolves (the worktree checkout shadows the main repo's copy).
+    cat > "$WT/.wtbs/straps/toolstrap/settings-probe" <<'PROBE'
+#!/usr/bin/env bash
+echo "shared=${NGROK_SHARED_URL:-unset}"
+PROBE
+    chmod +x "$WT/.wtbs/straps/toolstrap/settings-probe"
+    run "$SCRIPT" exec feature/exec settings-probe
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"shared=unset"* ]]
+}

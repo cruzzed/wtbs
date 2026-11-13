@@ -4,6 +4,9 @@
 # One verb, two strategies:
 #   valet installed  -> kill-and-respawn the dedicated tunnel process with a
 #                       host-header pointing at this checkout's valet site
+#                       (ngrok v3: one positional arg, the site rides in
+#                       --host-header; setsid keeps the tunnel alive past
+#                       callers that kill the command's process group)
 #   otherwise        -> sacred-port swap: kill whatever serves on
 #                       $NGROK_SHARE_PORT, then re-serve the project there
 #                       via its `serve` preset (.wtbs/serve), and make sure
@@ -43,6 +46,19 @@ valet_tld() {
     echo "$tld"
 }
 
+# Host the tunnel points at. The valet strap may serve this worktree under a
+# shortened symlink name (nginx's server_names_hash_bucket_size); it
+# publishes the real URL as the valet.url state token, which exec exports as
+# WTBS_VALET_URL. Prefer it; fall back to <site>.<tld>.
+valet_host() {
+    local site="$1"
+    if [[ -n "${WTBS_VALET_URL:-}" ]]; then
+        echo "${WTBS_VALET_URL#*://}"
+    else
+        echo "${site}.$(valet_tld)"
+    fi
+}
+
 kill_tunnel() {
     pkill -f "ngrok http.*${url}" 2>/dev/null || true
     sleep 1  # let the old tunnel release the reserved URL
@@ -51,9 +67,13 @@ kill_tunnel() {
 respawn_tunnel_valet() {
     local site="$1"
     kill_tunnel
-    nohup ngrok http --url="$url" --host-header=rewrite "${site}.$(valet_tld)" 80 \
-        >/dev/null 2>&1 &
-    echo "ngrok-share: https://${url} -> ${site}.$(valet_tld) (valet)"
+    # ngrok v3: exactly one positional arg (the port); the valet site rides
+    # in --host-header. setsid detaches into a new session so agent shells /
+    # CI runners that kill the command's process group on exit can't take
+    # the tunnel down with them.
+    setsid nohup ngrok http --url="$url" --host-header="$(valet_host "$site")" 80 \
+        </dev/null >/dev/null 2>&1 &
+    echo "ngrok-share: https://${url} -> $(valet_host "$site") (valet)"
 }
 
 kill_port_listener() {
@@ -67,7 +87,7 @@ kill_port_listener() {
 
 ensure_tunnel_port() {
     if ! pgrep -f "ngrok http.*${url}" >/dev/null 2>&1; then
-        nohup ngrok http --url="$url" "$share_port" >/dev/null 2>&1 &
+        setsid nohup ngrok http --url="$url" "$share_port" </dev/null >/dev/null 2>&1 &
         sleep 1
     fi
 }
@@ -84,7 +104,8 @@ spawn_serve() {
     (
         cd "$checkout"
         # CRLF checkouts (core.autocrlf) corrupt bash syntax; strip trailing CR.
-        WTBS_PORT_SERVE="$share_port" nohup bash <(sed 's/\r$//' "$preset") >/dev/null 2>&1 &
+        WTBS_PORT_SERVE="$share_port" setsid nohup bash <(sed 's/\r$//' "$preset") \
+            </dev/null >/dev/null 2>&1 &
     )
 }
 

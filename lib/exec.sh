@@ -179,6 +179,9 @@ cmd_exec() {
             export_context_vars ctx
             export WTBS_LIB_DIR="$LIB_DIR"
             export_strap_args_env_for "$main_root" "$worktree_path"
+            # User settings (~/.config/wtbs/settings.yml) are per-user by
+            # design; strap verbs need them just like hooks do (issue #20).
+            export_user_settings
             # WARNING: presets are project files executed as-is. Only run this
             # against repositories whose .wtbs/ scripts you trust.
             # Worktree checkouts may carry CRLF line endings (core.autocrlf),
@@ -231,6 +234,9 @@ cmd_exec() {
         export_context_vars ctx
         export WTBS_LIB_DIR="$LIB_DIR"
         export_strap_args_env_for "$main_root" "$worktree_path"
+        # User settings (~/.config/wtbs/settings.yml) are per-user by
+        # design; strap verbs need them just like hooks do (issue #20).
+        export_user_settings
         # WARNING: alias text comes from the project config and is executed
         # as-is. Only run this against repositories whose config you trust.
         bash -c "$cmd"
