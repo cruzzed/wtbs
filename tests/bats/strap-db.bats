@@ -93,6 +93,37 @@ EOF
     [[ ! -f "$WTBS_WORKTREE_ROOT/wt_branch.sqlite" ]]
 }
 
+@test "sqlite db-drop refuses unsafe targets and directories" {
+    echo "data" > "$WTBS_WORKTREE_ROOT/guarded.sqlite"
+
+    run "$STRAPS/sqlite/db-drop" ""
+    [ "$status" -eq 1 ]
+    run "$STRAPS/sqlite/db-drop" "/"
+    [ "$status" -eq 1 ]
+    run env HOME="$TMP_TEST_DIR" "$STRAPS/sqlite/db-drop" "$TMP_TEST_DIR"
+    [ "$status" -eq 1 ]
+    [ -d "$TMP_TEST_DIR" ]
+    run "$STRAPS/sqlite/db-drop" "$WTBS_MAIN_REPO"
+    [ "$status" -eq 1 ]
+    [ -d "$WTBS_MAIN_REPO" ]
+    # A real file still drops.
+    run "$STRAPS/sqlite/db-drop" "$WTBS_WORKTREE_ROOT/guarded.sqlite"
+    [ "$status" -eq 0 ]
+    [[ ! -e "$WTBS_WORKTREE_ROOT/guarded.sqlite" ]]
+}
+
+@test "sqlite db-drop uses the core guards when WTBS_LIB_DIR is exported" {
+    echo "data" > "$WTBS_WORKTREE_ROOT/guarded2.sqlite"
+    run env WTBS_LIB_DIR="$BATS_TEST_DIRNAME/../../lib" HOME="$TMP_TEST_DIR" \
+        "$STRAPS/sqlite/db-drop" "$TMP_TEST_DIR"
+    [ "$status" -eq 1 ]
+    [ -d "$TMP_TEST_DIR" ]
+    run env WTBS_LIB_DIR="$BATS_TEST_DIRNAME/../../lib" \
+        "$STRAPS/sqlite/db-drop" "$WTBS_WORKTREE_ROOT/guarded2.sqlite"
+    [ "$status" -eq 0 ]
+    [[ ! -e "$WTBS_WORKTREE_ROOT/guarded2.sqlite" ]]
+}
+
 @test "sqlite create lifecycle clones and rewrites DB_DATABASE" {
     echo "db-content" > "$WTBS_MAIN_REPO/db.sqlite3"
     echo 'DB_DATABASE=db.sqlite3' > "$WTBS_WORKTREE_ROOT/.env"

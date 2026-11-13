@@ -3,5 +3,18 @@
 set -euo pipefail
 
 target="${1:?usage: db-drop <db-file>}"
-rm -f "$target"
+
+# Refuse unsafe targets (empty, /, $HOME, directories). Prefer the core
+# guards when running under wtbs; fall back to inline checks so this script
+# stays safe standalone (published copies may predate the WTBS_LIB_DIR export).
+if [[ -n "${WTBS_LIB_DIR:-}" && -f "${WTBS_LIB_DIR}/utils.sh" ]]; then
+    # shellcheck source=../../lib/utils.sh
+    source "${WTBS_LIB_DIR}/utils.sh"
+    wtbs_remove_file "$target"
+else
+    [[ -n "$target" && "$target" != "/" && -n "${HOME:-}" && "$target" != "$HOME" ]] \
+        || { echo "FATAL: refusing unsafe db-drop target: '$target'" >&2; exit 1; }
+    [[ ! -d "$target" ]] || { echo "FATAL: refusing to remove directory: $target" >&2; exit 1; }
+    rm -f -- "$target"
+fi
 echo "db-drop: deleted $target"

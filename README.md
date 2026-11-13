@@ -66,6 +66,45 @@ worktree name for exec/shorthand): `--dry-run`, `--main-repo <path>`,
 `<repo>-<branch>` as a sibling, slashes → dashes, full length),
 `--delete-branch`, `--no-publish`.
 
+## Safety: destructive-operation guards
+
+wtbs deletes things for a living — worktrees, databases, branches. Two
+layers keep a mistyped variable from turning into `rm -rf $HOME`.
+
+**Guards (what wtbs itself will never do).** Every deletion in the core goes
+through validated helpers (`lib/utils.sh`): recursive removal only ever
+targets a git-registered worktree (or a directory carrying a `.git` entry);
+empty paths, `/`, and `$HOME` are refused outright; `destroy --delete-branch`
+refuses protected names (`main`, `master`, `dev`, `develop`, `HEAD`) and
+branches that don't exist. The bundled db straps validate database names
+against an allowlist before any `DROP DATABASE`.
+
+**The danger scan (what wtbs refuses to run).** Hooks, strap lifecycle
+scripts, strap verbs, presets, and aliases are project code — and wtbs
+executes them. Before running any of them, wtbs scans the script for
+dangerous patterns: recursive/bulk delete (`rm -r*`, `find -delete`,
+`find -exec rm`), `sudo`, `git push --force`, `mkfs`, `dd of=/dev/…`, and
+writes to block devices. On a hit, wtbs refuses with the file, line, and
+pattern. The scan runs at hook preflight (`create`), again at hook execution
+time, and at `exec` — so a script edited after the worktree was created is
+still caught.
+
+**When a refusal is wrong for your project, you have two escape hatches:**
+
+```bash
+# 1. Per line, with a reason (preferred — the justification is in the code):
+rm -rf /tmp/known-scratch  # wtbs:danger-ok teardown of our own scratch dir
+
+# 2. Globally, for a genuinely unusual script (warns loudly):
+WTBS_ALLOW_DANGEROUS=1 wtbs create feature/x
+```
+
+The scan is a lint-layer guard against mistypes and careless patterns, not a
+sandbox — a determined script can bypass it. For real isolation, run tests
+and experiments under the Landlock sandbox: `npm run test:sandboxed` (or
+`tests/landrun.sh <cmd…>`) runs with the repo read-only, one scratch
+directory writable, and no network.
+
 ## Config file (`.wtbs.yml`)
 
 Every key is optional; no config at all = a plain worktree.

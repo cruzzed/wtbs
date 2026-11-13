@@ -1,6 +1,11 @@
 {
   "name": "wtbs",
   "version": "0.5.1",
+  "scripts": {
+    "test": "./node_modules/.bin/bats tests/bats",
+    "test:sandboxed": "tests/landrun.sh",
+    "shellcheck": "shellcheck -x lib/*.sh wtbs.sh install.sh tests/landrun.sh straps/mysql/db-clone straps/mysql/db-drop straps/mysql/create straps/mysql/destroy straps/postgres/db-clone straps/postgres/db-drop straps/postgres/create straps/postgres/destroy straps/sqlite/db-clone straps/sqlite/db-drop straps/sqlite/create straps/sqlite/destroy straps/ngrok/ngrok-guard straps/ngrok/share straps/ngrok/destroy straps/valet/valet-site straps/valet/create straps/valet/destroy straps/auto-ports/create straps/auto-ports/destroy"
+  },
   "devDependencies": {
     "bats": "^1.11.0"
   }

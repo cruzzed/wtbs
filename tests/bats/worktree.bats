@@ -120,7 +120,15 @@ teardown() {
     [[ -d "$TMP_WT/not-a-worktree" ]]
 }
 
-@test "remove_worktree safely falls back to rm -rf for registered worktree" {
+@test "destroy_worktree refuses a plain directory that is not a worktree" {
+    mkdir -p "$TMP_WT/plain-dir"
+    run destroy_worktree "$TMP_WT/plain-dir"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no worktree found"* ]]
+    [[ -d "$TMP_WT/plain-dir" ]]
+}
+
+@test "remove_worktree safely falls back to wtbs_remove_tree for registered worktree" {
     cd "$TMP_ORIGIN"
     git worktree add -q "$TMP_WT/fallback" feature/test
     echo "dirty" > "$TMP_WT/fallback/dirty.txt"

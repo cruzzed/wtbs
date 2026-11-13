@@ -3,12 +3,15 @@
 set -euo pipefail
 
 target="${1:?usage: db-drop <target-db>}"
+[[ "$target" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || { echo "FATAL: refusing db-drop on suspicious database name: '$target'" >&2; exit 1; }
 
 host="${DB_HOST:-127.0.0.1}"
 port="${DB_PORT:-3306}"
 user="${DB_USERNAME:-root}"
 export MYSQL_PWD="${DB_PASSWORD:-}"
 
+# shellcheck disable=SC2016  # the backticks are literal identifier quoting, not command substitution
 quote_id() { printf '`%s`' "${1//\`/\`\`}"; }
 
 echo "DROP DATABASE IF EXISTS $(quote_id "$target");" \

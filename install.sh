@@ -18,7 +18,17 @@ if [[ ! -d "${HOME}/.local/share" ]]; then
 fi
 
 # Replace any previous install (including the pre-rename worktree-bootstrap
-# directory).
+# directory). The targets are validated literally first: this rm -rf must
+# never fall through to an unexpected path.
+[[ -n "${HOME:-}" ]] || { echo "FATAL: HOME is unset" >&2; exit 1; }
+EXPECTED_TARGET="${HOME}/.local/share/wtbs"
+EXPECTED_LEGACY="${HOME}/.local/share/worktree-bootstrap"
+[[ "$TARGET_DIR" == "$EXPECTED_TARGET" && "$LEGACY_DIR" == "$EXPECTED_LEGACY" ]] || {
+    echo "FATAL: refusing install: target dirs are not the expected paths" >&2
+    echo "  TARGET_DIR=$TARGET_DIR" >&2
+    echo "  LEGACY_DIR=$LEGACY_DIR" >&2
+    exit 1
+}
 rm -rf "$TARGET_DIR" "$LEGACY_DIR"
 mkdir -p "$TARGET_DIR"
 (

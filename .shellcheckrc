@@ -1,0 +1,19 @@
+# wtbs shellcheck configuration.
+#
+# SC2034 is disabled project-wide: wtbs uses `local -n` namerefs extensively
+# (config_list, build_context, compute_ports, ...), and shellcheck cannot
+# see through them — it reports every nameref output array as "unused".
+# wtbs.sh also sets globals (MAIN_ROOT_OVERRIDE, BASE_REF, ...) consumed by
+# the lib files it sources, which shellcheck analyses in isolation.
+#
+# SC1091 is disabled: lib files are sourced through the runtime variable
+# LIB_DIR, which shellcheck cannot resolve statically. Source correctness is
+# covered by the bats suite (every lib is loaded and exercised there).
+#
+# SC2030/SC2031 are disabled: exec and hooks deliberately export context
+# vars (WTBS_LIB_DIR, WTBS_STATE_FILE, ...) inside ( ... ) subshells so the
+# child process sees them; the "change might be lost" note is the point.
+disable=SC2034
+disable=SC1091
+disable=SC2030
+disable=SC2031
