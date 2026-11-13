@@ -8,6 +8,8 @@
 
 ## Destructive-op discipline (enforced, not just encouraged)
 
+Full rationale: [ADR-0009](docs/adr/0009-destructive-op-guards-and-danger-scan.md); user-facing docs: README "Safety: destructive-operation guards".
+
 - All deletions in core go through the guards in `lib/utils.sh`: `wtbs_remove_file`, `wtbs_remove_tree` (only recursive rm in the tool; requires a git-registered worktree), `wtbs_remove_branch` (refuses protected names: main/master/dev/develop). Never add a bare `rm` to `lib/` or `wtbs.sh` — `tests/bats/lint.bats` fails the build if you do.
 - Hooks, strap lifecycle scripts, strap verbs, presets, and aliases are danger-scanned before wtbs runs them (`danger_scan` in `lib/utils.sh`): recursive delete, `sudo`, force-push, and disk destroyers are refused. Escape hatches: mark the specific line `# wtbs:danger-ok <reason>`, or set `WTBS_ALLOW_DANGEROUS=1` (warns loudly). The scan is a lint-layer guard against mistypes and careless patterns, not a sandbox against hostile code.
 - Strap scripts needing the guards can `source "${WTBS_LIB_DIR}/utils.sh"` (WTBS_LIB_DIR is exported into hook/exec/strap contexts). Keep an inline fallback when the script must also work standalone.
